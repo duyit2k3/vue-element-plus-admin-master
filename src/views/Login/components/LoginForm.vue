@@ -4,8 +4,7 @@ import { Form, FormSchema } from '@/components/Form'
 import { useI18n } from '@/hooks/web/useI18n'
 import { ElCheckbox, ElLink } from 'element-plus'
 import { useForm } from '@/hooks/web/useForm'
-import { loginApi, getTestRoleApi, getAdminRoleApi } from '@/api/login'
-import { useAppStore } from '@/store/modules/app'
+import { loginApi } from '@/api/login'
 import { usePermissionStore } from '@/store/modules/permission'
 import { useRouter } from 'vue-router'
 import type { RouteLocationNormalizedLoaded, RouteRecordRaw } from 'vue-router'
@@ -18,8 +17,6 @@ import { BaseButton } from '@/components/Button'
 const { required } = useValidator()
 
 const emit = defineEmits(['to-register'])
-
-const appStore = useAppStore()
 
 const userStore = useUserStore()
 
@@ -237,30 +234,72 @@ const signIn = async () => {
       try {
         const res = await loginApi(formData)
 
-        if (res) {
+        console.log('=== Login Response ===', res)
+
+        if (res && res.data) {
+          const userData = res.data
+
+          console.log('=== User Data ===', userData)
+
+          // Lưu JWT token
+          if (userData.accessToken) {
+            userStore.setToken(`Bearer ${userData.accessToken}`)
+          }
+
           // Load remember
           if (unref(remember)) {
             userStore.setLoginInfo({
               username: formData.username,
-              password: formData.password
+              password: formData.password || ''
             })
           } else {
             userStore.setLoginInfo(undefined)
           }
           userStore.setRememberMe(unref(remember))
-          userStore.setUserInfo(res.data)
-          // DynamicRouter
-          if (appStore.getDynamicRouter) {
-            getRole()
-          } else {
+
+          // Lưu user info
+          userStore.setUserInfo({
+            username: userData.username,
+            role: userData.role,
+            email: userData.email,
+            fullName: userData.fullName,
+            accountId: userData.accountId
+          } as any)
+
+          console.log('=== User Role ===', userData.role)
+
+          // Check role and redirect accordingly
+          const userRole = userData.role?.toLowerCase()
+
+          console.log('=== User Role Lowercase ===', userRole)
+
+          // Check if user is warehouse_owner or customer - redirect immediately without dynamic router
+          if (userRole === 'warehouse_owner' || userRole === 'customer') {
+            console.log('=== Redirecting to warehouse for role ===', userRole)
+            // Generate static routes for these roles
             await permissionStore.generateRoutes('static').catch(() => {})
             permissionStore.getAddRouters.forEach((route) => {
               addRoute(route as RouteRecordRaw)
             })
             permissionStore.setIsAddRouters(true)
-            push({ path: redirect.value || permissionStore.addRouters[0].path })
+            console.log('=== Pushing to /warehouse/overview ===')
+            console.log('=== Permission Store IsAddRouters ===', permissionStore.getIsAddRouters)
+            console.log('=== User Store Info ===', userStore.getUserInfo)
+
+            // Use nextTick to ensure store is updated
+            await push({ path: '/warehouse/overview' })
+            console.log('=== Push completed ===')
+          } else {
+            console.log('=== Other role, using dynamic/static router ===')
+            // For other roles, let router guard handle the routing
+            // Just redirect to root and let permission guard take over
+            push({ path: redirect.value || '/' })
           }
+        } else {
+          console.error('=== No response data ===')
         }
+      } catch (error) {
+        console.error('=== Login Error ===', error)
       } finally {
         loading.value = false
       }
@@ -268,29 +307,39 @@ const signIn = async () => {
   })
 }
 
-const getRole = async () => {
-  const formData = await getFormData<UserType>()
-  const params = {
-    roleName: formData.username
-  }
-  const res =
-    appStore.getDynamicRouter && appStore.getServerDynamicRouter
-      ? await getAdminRoleApi(params)
-      : await getTestRoleApi(params)
-  if (res) {
-    const routers = res.data || []
-    userStore.setRoleRouters(routers)
-    appStore.getDynamicRouter && appStore.getServerDynamicRouter
-      ? await permissionStore.generateRoutes('server', routers).catch(() => {})
-      : await permissionStore.generateRoutes('frontEnd', routers).catch(() => {})
+// Deprecated: getRole is no longer used as routing is handled by permission guard
+// const getRole = async () => {
+//   const formData = await getFormData<UserType>()
+//   const params = {
+//     roleName: formData.username
+//   }
+//   const res =
+//     appStore.getDynamicRouter && appStore.getServerDynamicRouter
+//       ? await getAdminRoleApi(params)
+//       : await getTestRoleApi(params)
+//   if (res) {
+//     const routers = res.data || []
+//     userStore.setRoleRouters(routers)
+//     appStore.getDynamicRouter && appStore.getServerDynamicRouter
+//       ? await permissionStore.generateRoutes('server', routers).catch(() => {})
+//       : await permissionStore.generateRoutes('frontEnd', routers).catch(() => {})
 
-    permissionStore.getAddRouters.forEach((route) => {
-      addRoute(route as RouteRecordRaw)
-    })
-    permissionStore.setIsAddRouters(true)
-    push({ path: redirect.value || permissionStore.addRouters[0].path })
-  }
-}
+//     permissionStore.getAddRouters.forEach((route) => {
+//       addRoute(route as RouteRecordRaw)
+//     })
+//     permissionStore.setIsAddRouters(true)
+
+//     // Check role and redirect accordingly
+//     const userInfo = userStore.getUserInfo
+//     const userRole = userInfo?.role?.toLowerCase()
+
+//     if (userRole === 'warehouse_owner' || userRole === 'customer') {
+//       push({ path: '/warehouse/3d' })
+//     } else {
+//       push({ path: redirect.value || permissionStore.addRouters[0].path })
+//     }
+//   }
+// }
 
 const toRegister = () => {
   emit('to-register')

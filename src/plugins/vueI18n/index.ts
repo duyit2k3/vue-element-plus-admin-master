@@ -3,15 +3,23 @@ import { createI18n } from 'vue-i18n'
 import { useLocaleStoreWithOut } from '@/store/modules/locale'
 import type { I18n, I18nOptions } from 'vue-i18n'
 import { setHtmlPageLang } from './helper'
+import zhCN from '@/locales/zh-CN'
+import en from '@/locales/en'
+import vi from '@/locales/vi'
 
 export let i18n: ReturnType<typeof createI18n>
+
+const localeModules: Record<string, any> = {
+  'zh-CN': zhCN,
+  en: en,
+  vi: vi
+}
 
 const createI18nOptions = async (): Promise<I18nOptions> => {
   const localeStore = useLocaleStoreWithOut()
   const locale = localeStore.getCurrentLocale
   const localeMap = localeStore.getLocaleMap
-  const defaultLocal = await import(`../../locales/${locale.lang}.ts`)
-  const message = defaultLocal.default ?? {}
+  const message = localeModules[locale.lang] ?? localeModules['zh-CN']
 
   setHtmlPageLang(locale.lang)
 

@@ -18,14 +18,28 @@ router.beforeEach(async (to, from, next) => {
   const permissionStore = usePermissionStoreWithOut()
   const appStore = useAppStoreWithOut()
   const userStore = useUserStoreWithOut()
+
   if (userStore.getUserInfo) {
     if (to.path === '/login') {
-      next({ path: '/' })
+      // Redirect based on user role after login
+      const userRole = userStore.getUserInfo?.role?.toLowerCase()
+      if (userRole === 'warehouse_owner' || userRole === 'customer') {
+        next({ path: '/warehouse/overview' })
+      } else {
+        next({ path: '/dashboard/analysis' })
+      }
     } else {
-      if (permissionStore.getIsAddRouters) {
+      // Kiểm tra nếu route not found và cần regenerate
+      const needsRegenerate =
+        !permissionStore.getIsAddRouters ||
+        (to.matched.length === 0 && to.path !== '/404' && to.path !== '/login')
+
+      if (!needsRegenerate) {
         next()
         return
       }
+
+      console.log('Generating routes for:', to.path)
 
       // Danh sách quyền hoặc route được trả từ backend (tuỳ cấu hình)
       const roleRouters = userStore.getRoleRouters || []

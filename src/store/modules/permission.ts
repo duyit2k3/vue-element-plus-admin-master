@@ -77,20 +77,7 @@ export const usePermissionStore = defineStore('permission', {
       this.menuTabRouters = routers
     }
   },
-  persist: [
-    {
-      pick: ['routers'],
-      storage: localStorage
-    },
-    {
-      pick: ['addRouters'],
-      storage: localStorage
-    },
-    {
-      pick: ['menuTabRouters'],
-      storage: localStorage
-    }
-  ]
+  persist: false // Không persist routes để tránh lỗi 404 sau khi reload
 })
 
 export const usePermissionStoreWithOut = () => {

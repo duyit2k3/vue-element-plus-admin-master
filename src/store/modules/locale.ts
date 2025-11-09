@@ -21,10 +21,13 @@ interface LocaleState {
 
 export const useLocaleStore = defineStore('locales', {
   state: (): LocaleState => {
+    const savedLang = getStorage('lang') as LocaleType
+    const validLang: LocaleType =
+      savedLang && ['zh-CN', 'en', 'vi'].includes(savedLang) ? savedLang : 'vi'
     return {
       currentLocale: {
-        lang: getStorage('lang') || 'zh-CN',
-        elLocale: elLocaleMap[getStorage('lang') || 'zh-CN']
+        lang: validLang,
+        elLocale: elLocaleMap[validLang]
       },
       // 多语言
       localeMap: [

@@ -647,6 +647,101 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     ]
   },
   {
+    path: '/warehouse',
+    component: Layout,
+    redirect: '/warehouse/overview',
+    name: 'Warehouse',
+    meta: {
+      title: 'Quản Lý Kho',
+      icon: 'vi-ant-design:database-filled',
+      alwaysShow: true
+    },
+    children: [
+      {
+        path: 'overview',
+        component: () => import('@/views/Warehouse/WarehouseOverview.vue'),
+        name: 'WarehouseOverview',
+        meta: {
+          title: 'Tổng Quan',
+          icon: 'vi-ant-design:dashboard-outlined',
+          noCache: true
+        }
+      },
+      {
+        path: 'list',
+        component: () => import('@/views/Warehouse/WarehouseList.vue'),
+        name: 'WarehouseList',
+        meta: {
+          title: 'Danh Sách Kho',
+          icon: 'vi-ant-design:appstore-outlined',
+          noCache: false
+        }
+      },
+      {
+        path: ':id/detail',
+        component: () => import('@/views/Warehouse/WarehouseDetail.vue'),
+        name: 'WarehouseDetail',
+        meta: {
+          title: 'Chi Tiết Kho',
+          icon: 'vi-ant-design:info-circle-outlined',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/list'
+        }
+      },
+      {
+        path: ':id/3d-view',
+        component: () => import('@/views/Warehouse/Warehouse3DViewer.vue'),
+        name: 'Warehouse3DViewer',
+        meta: {
+          title: 'Xem Kho 3D',
+          icon: 'vi-ant-design:deployment-unit-outlined',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/list'
+        }
+      },
+      {
+        path: ':id/items',
+        component: () => import('@/views/Warehouse/WarehouseItems.vue'),
+        name: 'WarehouseItems',
+        meta: {
+          title: 'Quản Lý Hàng Hóa',
+          icon: 'vi-ant-design:inbox-outlined',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/list'
+        }
+      },
+      {
+        path: ':id/zones',
+        component: () => import('@/views/Warehouse/WarehouseZones.vue'),
+        name: 'WarehouseZones',
+        meta: {
+          title: 'Quản Lý Khu Vực',
+          icon: 'vi-ant-design:layout-outlined',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/list'
+        }
+      },
+      {
+        path: 'reports',
+        component: () => import('@/views/Warehouse/WarehouseReports.vue'),
+        name: 'WarehouseReports',
+        meta: {
+          title: 'Báo Cáo',
+          icon: 'vi-ant-design:file-text-outlined',
+          noCache: false
+        }
+      }
+    ]
+  },
+  {
     path: '/error',
     component: Layout,
     redirect: '/error/404',

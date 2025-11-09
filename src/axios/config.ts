@@ -39,11 +39,11 @@ const defaultResponseInterceptors = (response: AxiosResponse) => {
   if (response?.config?.responseType === 'blob') {
     // 如果是文件流，直接过
     return response
-  } else if (response.data.code === SUCCESS_CODE) {
+  } else if (response.data.code === SUCCESS_CODE || response.data.statusCode === 200) {
     return response.data
   } else {
     ElMessage.error(response?.data?.message)
-    if (response?.data?.code === 401) {
+    if (response?.data?.code === 401 || response?.data?.statusCode === 401) {
       const userStore = useUserStoreWithOut()
       userStore.logout()
     }
