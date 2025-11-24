@@ -43,12 +43,17 @@ router.beforeEach(async (to, from, next) => {
 
       // Danh sách quyền hoặc route được trả từ backend (tuỳ cấu hình)
       const roleRouters = userStore.getRoleRouters || []
+      const hasRoleRouters = (roleRouters as Array<unknown>).length > 0
 
       // Kiểm tra xem có bật chức năng route động không
       if (appStore.getDynamicRouter) {
-        appStore.serverDynamicRouter
-          ? await permissionStore.generateRoutes('server', roleRouters as AppCustomRouteRecordRaw[])
-          : await permissionStore.generateRoutes('frontEnd', roleRouters as string[])
+        if (appStore.serverDynamicRouter && hasRoleRouters) {
+          await permissionStore.generateRoutes('server', roleRouters as AppCustomRouteRecordRaw[])
+        } else if (appStore.serverDynamicRouter && !hasRoleRouters) {
+          await permissionStore.generateRoutes('static')
+        } else {
+          await permissionStore.generateRoutes('frontEnd', roleRouters as string[])
+        }
       } else {
         await permissionStore.generateRoutes('static')
       }
