@@ -10,6 +10,9 @@ const warehouseApi = {
   },
   getWarehousesByOwner: (ownerId: number) => {
     return request.get({ url: `/Warehouse/owner/${ownerId}` })
+  },
+  getWarehousesByCustomer: (customerId: number) => {
+    return request.get({ url: `/Warehouse/customer/${customerId}` })
   }
 }
 

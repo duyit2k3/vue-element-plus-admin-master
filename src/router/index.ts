@@ -738,6 +738,16 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
           icon: 'vi-ant-design:file-text-outlined',
           noCache: false
         }
+      },
+      {
+        path: 'inbound-request',
+        component: () => import('@/views/Warehouse/WarehouseInboundRequest.vue'),
+        name: 'WarehouseInboundRequest',
+        meta: {
+          title: 'Yêu Cầu Nhập Kho',
+          icon: 'vi-ant-design:plus-square-outlined',
+          noCache: true
+        }
       }
     ]
   },

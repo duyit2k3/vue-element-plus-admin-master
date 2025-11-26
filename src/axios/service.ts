@@ -34,7 +34,18 @@ axiosInstance.interceptors.response.use(
   },
   (error: AxiosError) => {
     console.log('err： ' + error) // for debug
-    ElMessage.error(error.message)
+    const status = error.response?.status
+    const data: any = error.response?.data
+
+    if (status === 404) {
+      const msg = (data && (data.message || data.error)) || 'Không tìm thấy tài nguyên (404)'
+      ElMessage.error(msg)
+    } else if (data && (data.message || data.error)) {
+      ElMessage.error(data.message || data.error)
+    } else {
+      ElMessage.error(error.message)
+    }
+
     return Promise.reject(error)
   }
 )
