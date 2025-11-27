@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, watch, computed } from 'vue'
-import { useRouter } from 'vue-router'
 import {
   ElCard,
   ElRow,
@@ -34,12 +33,11 @@ import inboundApi, {
 } from '@/api/inbound'
 import { useUserStore } from '@/store/modules/user'
 
-const router = useRouter()
 const userStore = useUserStore()
 
 // Warehouse
 const warehouses = ref<WarehouseListItem[]>([])
-const selectedWarehouseId = ref<number | null>(null)
+const selectedWarehouseId = ref<number | undefined>(undefined)
 const loadingWarehouses = ref(false)
 
 const loadWarehouses = async () => {
@@ -74,15 +72,15 @@ const loadWarehouses = async () => {
 const palletTab = ref<'template' | 'custom'>('template')
 const palletTemplates = ref<PalletTemplate[]>([])
 const createdPallets = ref<PalletViewModel[]>([])
-const selectedPalletId = ref<number | null>(null)
+const selectedPalletId = ref<number | undefined>(undefined)
 const loadingPalletTemplates = ref(false)
 
 const palletFromTemplateForm = reactive<{
-  templateId: number | null
+  templateId: number | undefined
   barcode: string
   palletType: string
 }>({
-  templateId: null,
+  templateId: undefined,
   barcode: '',
   palletType: ''
 })
@@ -138,10 +136,7 @@ const createPalletFromTemplate = async () => {
     palletType: palletFromTemplateForm.palletType || undefined
   }
   try {
-    const res = await palletApi.createPalletFromTemplate(
-      palletFromTemplateForm.templateId,
-      payload
-    )
+    const res = await palletApi.createPalletFromTemplate(palletFromTemplateForm.templateId, payload)
     if (res && (res.statusCode === 201 || res.statusCode === 200 || res.code === 0)) {
       addCreatedPallet(res.data as PalletViewModel)
     }
@@ -171,8 +166,8 @@ const createCustomPallet = async () => {
 
 // Product
 const products = ref<ProductViewModel[]>([])
-const selectedProductId = ref<number | null>(null)
-const currentProductId = ref<number | null>(null)
+const selectedProductId = ref<number | undefined>(undefined)
+const currentProductId = ref<number | undefined>(undefined)
 const loadingProducts = ref(false)
 
 const productForm = reactive<CreateProductRequest>({
@@ -247,18 +242,18 @@ const saveProductAsNew = async () => {
 const items = ref<InboundItemRequest[]>([])
 
 const itemForm = reactive<{
-  palletId: number | null
+  palletId: number | undefined
   quantity: number
   manufacturingDate: string
-  expiryDate: string | null
+  expiryDate: string | undefined
   unitPrice: number
   totalAmount: number
   batchNumber: string
 }>({
-  palletId: null,
+  palletId: undefined,
   quantity: 1,
   manufacturingDate: '',
-  expiryDate: null,
+  expiryDate: undefined,
   unitPrice: 0,
   totalAmount: 0,
   batchNumber: ''
@@ -281,8 +276,8 @@ const productNameMap = computed<Record<number, string>>(() => {
   return map
 })
 
-const currentPallet = computed<PalletViewModel | null>(() => {
-  return createdPallets.value.find((p) => p.palletId === selectedPalletId.value) || null
+const currentPallet = computed<PalletViewModel | undefined>(() => {
+  return createdPallets.value.find((p) => p.palletId === selectedPalletId.value)
 })
 
 const addItemToList = () => {
@@ -324,7 +319,7 @@ const addItemToList = () => {
   // Reset một phần form cho lần nhập tiếp theo
   itemForm.quantity = 1
   itemForm.manufacturingDate = ''
-  itemForm.expiryDate = null
+  itemForm.expiryDate = undefined
   itemForm.unitPrice = 0
   itemForm.totalAmount = 0
   itemForm.batchNumber = ''
@@ -436,7 +431,10 @@ onMounted(() => {
                   </ElSelect>
                 </ElFormItem>
                 <ElFormItem label="Barcode" required>
-                  <ElInput v-model="palletFromTemplateForm.barcode" placeholder="Mã barcode pallet" />
+                  <ElInput
+                    v-model="palletFromTemplateForm.barcode"
+                    placeholder="Mã barcode pallet"
+                  />
                 </ElFormItem>
                 <ElFormItem label="Loại pallet">
                   <ElInput v-model="palletFromTemplateForm.palletType" placeholder="Loại pallet" />
@@ -467,7 +465,11 @@ onMounted(() => {
                   <ElInputNumber v-model="customPalletForm.maxWeight" :min="0.01" :step="10" />
                 </ElFormItem>
                 <ElFormItem label="Chiều cao xếp chồng (m)">
-                  <ElInputNumber v-model="customPalletForm.maxStackHeight" :min="0.01" :step="0.1" />
+                  <ElInputNumber
+                    v-model="customPalletForm.maxStackHeight"
+                    :min="0.01"
+                    :step="0.1"
+                  />
                 </ElFormItem>
                 <ElFormItem label="Loại pallet">
                   <ElInput v-model="customPalletForm.palletType" placeholder="Loại pallet" />
@@ -528,7 +530,7 @@ onMounted(() => {
               <ElInput v-model="productForm.productName" />
             </ElFormItem>
             <ElFormItem label="Mô tả">
-              <ElInput v-model="productForm.description" type="textarea" rows="2" />
+              <ElInput v-model="productForm.description" type="textarea" :rows="2" />
             </ElFormItem>
             <ElFormItem label="Đơn vị" required>
               <ElInput v-model="productForm.unit" />
@@ -669,7 +671,7 @@ onMounted(() => {
       </template>
       <ElForm label-width="140px">
         <ElFormItem label="Ghi chú">
-          <ElInput v-model="notes" type="textarea" rows="3" />
+          <ElInput v-model="notes" type="textarea" :rows="3" />
         </ElFormItem>
         <ElFormItem>
           <ElButton type="primary" :loading="submitting" @click="submitRequest">
@@ -723,8 +725,8 @@ onMounted(() => {
 }
 
 .product-summary {
-  min-height: 24px;
   display: flex;
+  min-height: 24px;
   align-items: center;
 }
 
