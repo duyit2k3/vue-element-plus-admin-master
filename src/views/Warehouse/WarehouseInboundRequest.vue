@@ -29,16 +29,21 @@ import palletApi, {
 import productApi, { type ProductViewModel, type CreateProductRequest } from '@/api/product'
 import inboundApi, {
   type InboundItemRequest,
-  type CreateInboundRequestRequest
+  type CreateInboundRequestRequest,
+  type InboundRequestListItem
 } from '@/api/inbound'
 import { useUserStore } from '@/store/modules/user'
+import { useRoute } from 'vue-router'
 
 const userStore = useUserStore()
+const route = useRoute()
 
 // Warehouse
 const warehouses = ref<WarehouseListItem[]>([])
 const selectedWarehouseId = ref<number | undefined>(undefined)
 const loadingWarehouses = ref(false)
+const inboundRequests = ref<InboundRequestListItem[]>([])
+const loadingInboundRequests = ref(false)
 
 const loadWarehouses = async () => {
   loadingWarehouses.value = true
@@ -58,13 +63,33 @@ const loadWarehouses = async () => {
     if (res && (res.statusCode === 200 || res.code === 0)) {
       warehouses.value = (res.data || []) as WarehouseListItem[]
       if (!selectedWarehouseId.value && warehouses.value.length > 0) {
-        selectedWarehouseId.value = warehouses.value[0].warehouseId
+        const qId = route.query.warehouseId ? Number(route.query.warehouseId) : undefined
+        const matched = qId ? warehouses.value.find((w) => w.warehouseId === qId) : undefined
+        selectedWarehouseId.value = matched ? matched.warehouseId : warehouses.value[0].warehouseId
       }
     }
   } catch (error) {
     ElMessage.error('Không thể tải danh sách kho')
   } finally {
     loadingWarehouses.value = false
+  }
+}
+
+const loadInboundRequests = async () => {
+  loadingInboundRequests.value = true
+  try {
+    const params: { warehouseId?: number } = {}
+    if (selectedWarehouseId.value) {
+      params.warehouseId = selectedWarehouseId.value
+    }
+    const res = await inboundApi.getInboundRequests(params)
+    if (res && (res.statusCode === 200 || res.code === 0)) {
+      inboundRequests.value = (res.data || []) as InboundRequestListItem[]
+    }
+  } catch (error) {
+    ElMessage.error('Không thể tải danh sách yêu cầu nhập kho')
+  } finally {
+    loadingInboundRequests.value = false
   }
 }
 
@@ -268,6 +293,13 @@ watch(
   }
 )
 
+watch(
+  () => selectedWarehouseId.value,
+  () => {
+    loadInboundRequests()
+  }
+)
+
 const productNameMap = computed<Record<number, string>>(() => {
   const map: Record<number, string> = {}
   products.value.forEach((p) => {
@@ -389,6 +421,7 @@ onMounted(() => {
             placeholder="Chọn kho đã thuê"
             :loading="loadingWarehouses"
             filterable
+            clearable
           >
             <ElOption
               v-for="w in warehouses"
@@ -680,6 +713,39 @@ onMounted(() => {
           </ElButton>
         </ElFormItem>
       </ElForm>
+    </ElCard>
+
+    <ElCard class="mb-20px" shadow="hover">
+      <template #header>
+        <div class="card-header">
+          <span class="text-lg font-bold">Danh sách yêu cầu nhập kho</span>
+          <ElButton
+            text
+            type="primary"
+            :loading="loadingInboundRequests"
+            @click="loadInboundRequests"
+          >
+            <Icon icon="vi-ep:refresh" />
+            Làm mới
+          </ElButton>
+        </div>
+      </template>
+      <ElTable
+        v-if="inboundRequests.length"
+        :data="inboundRequests"
+        border
+        size="small"
+        v-loading="loadingInboundRequests"
+      >
+        <ElTableColumn prop="receiptNumber" label="Mã phiếu" width="180" />
+        <ElTableColumn prop="warehouseName" label="Kho" min-width="200" />
+        <ElTableColumn prop="inboundDate" label="Ngày yêu cầu" width="160" />
+        <ElTableColumn prop="status" label="Trạng thái" width="120" />
+        <ElTableColumn prop="totalItems" label="Số hàng" width="100" />
+        <ElTableColumn prop="totalPallets" label="Số pallet" width="110" />
+        <ElTableColumn prop="createdByName" label="Người tạo" min-width="180" />
+      </ElTable>
+      <div v-else class="text-gray text-sm">Chưa có yêu cầu nhập kho nào.</div>
     </ElCard>
   </div>
 </template>

@@ -49,7 +49,10 @@ const palletApi = {
     return request.post<PalletViewModel>({ url: '/Pallet/create', data })
   },
   createPalletFromTemplate: (templateId: number, data: CreatePalletFromTemplateRequest) => {
-    return request.post<PalletViewModel>({ url: `/Pallet/create-from-template/${templateId}`, data })
+    return request.post<PalletViewModel>({
+      url: `/Pallet/create-from-template/${templateId}`,
+      data
+    })
   }
 }
 

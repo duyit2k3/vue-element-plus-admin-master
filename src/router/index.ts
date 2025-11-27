@@ -88,7 +88,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     meta: {
       title: t('router.dashboard'),
       icon: 'vi-ant-design:dashboard-filled',
-      alwaysShow: true
+      alwaysShow: true,
+      hidden: true
     },
     children: [
       {
@@ -115,7 +116,9 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
   {
     path: '/external-link',
     component: Layout,
-    meta: {},
+    meta: {
+      hidden: true
+    },
     name: 'ExternalLink',
     children: [
       {
@@ -132,7 +135,9 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     path: '/guide',
     component: Layout,
     name: 'Guide',
-    meta: {},
+    meta: {
+      hidden: true
+    },
     children: [
       {
         path: 'index',
@@ -152,7 +157,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     meta: {
       title: t('router.component'),
       icon: 'vi-bx:bxs-component',
-      alwaysShow: true
+      alwaysShow: true,
+      hidden: true
     },
     children: [
       {
@@ -417,7 +423,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     meta: {
       title: t('router.function'),
       icon: 'vi-ri:function-fill',
-      alwaysShow: true
+      alwaysShow: true,
+      hidden: true
     },
     children: [
       {
@@ -466,7 +473,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     meta: {
       title: 'hooks',
       icon: 'vi-ic:outline-webhook',
-      alwaysShow: true
+      alwaysShow: true,
+      hidden: true
     },
     children: [
       {
@@ -526,7 +534,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     name: 'Level',
     meta: {
       title: t('router.level'),
-      icon: 'vi-carbon:skill-level-advanced'
+      icon: 'vi-carbon:skill-level-advanced',
+      hidden: true
     },
     children: [
       {
@@ -586,7 +595,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     meta: {
       title: t('router.example'),
       icon: 'vi-ep:management',
-      alwaysShow: true
+      alwaysShow: true,
+      hidden: true
     },
     children: [
       {
@@ -741,12 +751,24 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
       },
       {
         path: 'inbound-request',
-        component: () => import('@/views/Warehouse/WarehouseInboundRequest.vue'),
+        component: () => import('@/views/Warehouse/WarehouseInboundRequestList.vue'),
         name: 'WarehouseInboundRequest',
         meta: {
           title: 'Yêu Cầu Nhập Kho',
           icon: 'vi-ant-design:plus-square-outlined',
           noCache: true
+        }
+      },
+      {
+        path: 'inbound-request/create',
+        component: () => import('@/views/Warehouse/WarehouseInboundRequest.vue'),
+        name: 'WarehouseInboundRequestCreate',
+        meta: {
+          title: 'Tạo Yêu Cầu Nhập Kho',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/inbound-request'
         }
       }
     ]
@@ -759,7 +781,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     meta: {
       title: t('router.errorPage'),
       icon: 'vi-ci:error',
-      alwaysShow: true
+      alwaysShow: true,
+      hidden: true
     },
     children: [
       {
@@ -796,7 +819,8 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
     meta: {
       title: t('router.authorization'),
       icon: 'vi-eos-icons:role-binding',
-      alwaysShow: true
+      alwaysShow: true,
+      hidden: true
     },
     children: [
       {

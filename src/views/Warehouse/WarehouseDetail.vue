@@ -6,13 +6,31 @@ import { ElCard, ElRow, ElCol, ElButton, ElMessage, ElStatistic, ElSkeleton } fr
 import { Icon } from '@/components/Icon'
 import { useRouter, useRoute } from 'vue-router'
 import warehouseApi, { type Warehouse3DData } from '@/api/warehouse'
+import { useUserStore } from '@/store/modules/user'
 
 const { push } = useRouter()
 const route = useRoute()
 const loading = ref(true)
 const warehouseData = ref<Warehouse3DData | null>(null)
+const userStore = useUserStore()
 
 const warehouseId = computed(() => Number(route.params.id))
+const userRole = computed(() => userStore.getUserInfo?.role?.toLowerCase() || '')
+const canCreateInbound = computed(() => userRole.value === 'customer')
+const canViewInbound = computed(() =>
+  ['customer', 'warehouse_owner', 'admin'].includes(userRole.value)
+)
+
+const goToCreateInbound = () => {
+  push({
+    path: '/warehouse/inbound-request/create',
+    query: { warehouseId: String(warehouseId.value) }
+  })
+}
+
+const goToViewInbound = () => {
+  push({ path: '/warehouse/inbound-request', query: { warehouseId: String(warehouseId.value) } })
+}
 
 // Statistics from warehouse data
 const stats = computed(() => {
@@ -181,6 +199,14 @@ onMounted(() => {
             <ElButton type="info" @click="push('/warehouse/reports')">
               <Icon icon="vi-ant-design:file-text-outlined" />
               Xem Báo Cáo
+            </ElButton>
+            <ElButton v-if="canCreateInbound" type="primary" @click="goToCreateInbound">
+              <Icon icon="vi-ant-design:plus-square-outlined" />
+              Thêm Yêu Cầu Nhập Kho
+            </ElButton>
+            <ElButton v-if="canViewInbound" @click="goToViewInbound">
+              <Icon icon="vi-ant-design:unordered-list-outlined" />
+              Xem Yêu Cầu Nhập Kho
             </ElButton>
           </div>
         </ElCard>
