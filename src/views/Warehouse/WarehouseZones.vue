@@ -50,6 +50,11 @@ const columns = reactive<TableColumn[]>([
     field: 'capacity',
     label: 'Dung Tích (m³)',
     width: '130px'
+  },
+  {
+    field: 'actions',
+    label: 'Thao Tác',
+    width: '160px'
   }
 ])
 
@@ -132,6 +137,18 @@ onMounted(() => {
 
       <template #capacity="{ row }">
         <span>{{ (row.length * row.width * row.height).toFixed(2) }}</span>
+      </template>
+
+      <template #actions="{ row }">
+        <ElButton
+          v-if="row.zoneType === 'rack'"
+          type="primary"
+          size="small"
+          @click="push(`/warehouse/${warehouseId}/zones/${row.zoneId}/racks`)"
+        >
+          <Icon icon="vi-ant-design:appstore-outlined" />
+          Quản lý kệ
+        </ElButton>
       </template>
     </Table>
   </ContentWrap>

@@ -264,7 +264,13 @@ const saveProductAsNew = async () => {
 }
 
 // Inbound items
-const items = ref<InboundItemRequest[]>([])
+type InboundItemWithDimensions = InboundItemRequest & {
+  length?: number
+  width?: number
+  height?: number
+}
+
+const items = ref<InboundItemWithDimensions[]>([])
 
 const itemForm = reactive<{
   palletId: number | undefined
@@ -274,6 +280,9 @@ const itemForm = reactive<{
   unitPrice: number
   totalAmount: number
   batchNumber: string
+  length: number | undefined
+  width: number | undefined
+  height: number | undefined
 }>({
   palletId: undefined,
   quantity: 1,
@@ -281,7 +290,10 @@ const itemForm = reactive<{
   expiryDate: undefined,
   unitPrice: 0,
   totalAmount: 0,
-  batchNumber: ''
+  batchNumber: '',
+  length: undefined,
+  width: undefined,
+  height: undefined
 })
 
 watch(
@@ -312,6 +324,10 @@ const currentPallet = computed<PalletViewModel | undefined>(() => {
   return createdPallets.value.find((p) => p.palletId === selectedPalletId.value)
 })
 
+const quantityLabel = computed(() => {
+  return productForm.unit ? `Số lượng (${productForm.unit})` : 'Số lượng'
+})
+
 const addItemToList = () => {
   if (!selectedWarehouseId.value) {
     ElMessage.error('Vui lòng chọn kho')
@@ -335,7 +351,17 @@ const addItemToList = () => {
     return
   }
 
-  const payload: InboundItemRequest = {
+  if (!itemForm.length || !itemForm.width || !itemForm.height) {
+    ElMessage.error('Vui lòng nhập đầy đủ chiều dài, rộng, cao của hàng hóa')
+    return
+  }
+
+  if (items.value.some((it) => it.palletId === palletId)) {
+    ElMessage.error('Mỗi pallet chỉ được thêm một hàng hóa trong một yêu cầu')
+    return
+  }
+
+  const payload: InboundItemWithDimensions = {
     palletId,
     productId: currentProductId.value,
     quantity: itemForm.quantity,
@@ -343,7 +369,10 @@ const addItemToList = () => {
     expiryDate: itemForm.expiryDate || undefined,
     unitPrice: itemForm.unitPrice,
     totalAmount: itemForm.totalAmount,
-    batchNumber: itemForm.batchNumber || undefined
+    batchNumber: itemForm.batchNumber || undefined,
+    length: itemForm.length,
+    width: itemForm.width,
+    height: itemForm.height
   }
 
   items.value.push(payload)
@@ -485,13 +514,20 @@ onMounted(() => {
                 <ElFormItem label="Barcode" required>
                   <ElInput v-model="customPalletForm.barcode" placeholder="Mã barcode pallet" />
                 </ElFormItem>
-                <ElFormItem label="Kích thước (m)" required>
-                  <div class="inline-inputs">
-                    <ElInputNumber v-model="customPalletForm.length" :min="0.01" :step="0.1" />
-                    <span class="mx-5">×</span>
-                    <ElInputNumber v-model="customPalletForm.width" :min="0.01" :step="0.1" />
-                    <span class="mx-5">×</span>
-                    <ElInputNumber v-model="customPalletForm.height" :min="0.01" :step="0.01" />
+                <ElFormItem label="Kích thước pallet (m)" required>
+                  <div class="inline-inputs dims-group">
+                    <div class="dim-field">
+                      <span class="dim-label">Chiều dài (L)</span>
+                      <ElInputNumber v-model="customPalletForm.length" :min="0.01" :step="0.1" />
+                    </div>
+                    <div class="dim-field">
+                      <span class="dim-label">Chiều rộng (W)</span>
+                      <ElInputNumber v-model="customPalletForm.width" :min="0.01" :step="0.1" />
+                    </div>
+                    <div class="dim-field">
+                      <span class="dim-label">Chiều cao (H)</span>
+                      <ElInputNumber v-model="customPalletForm.height" :min="0.01" :step="0.01" />
+                    </div>
                   </div>
                 </ElFormItem>
                 <ElFormItem label="Tải trọng tối đa (kg)">
@@ -571,13 +607,20 @@ onMounted(() => {
             <ElFormItem label="Danh mục">
               <ElInput v-model="productForm.category" />
             </ElFormItem>
-            <ElFormItem label="Kích thước chuẩn (m)">
-              <div class="inline-inputs">
-                <ElInputNumber v-model="productForm.standardLength" :min="0.01" :step="0.1" />
-                <span class="mx-5">×</span>
-                <ElInputNumber v-model="productForm.standardWidth" :min="0.01" :step="0.1" />
-                <span class="mx-5">×</span>
-                <ElInputNumber v-model="productForm.standardHeight" :min="0.01" :step="0.01" />
+            <ElFormItem label="Kích thước chuẩn SP (m)">
+              <div class="inline-inputs dims-group">
+                <div class="dim-field">
+                  <span class="dim-label">Chiều dài (L)</span>
+                  <ElInputNumber v-model="productForm.standardLength" :min="0.01" :step="0.1" />
+                </div>
+                <div class="dim-field">
+                  <span class="dim-label">Chiều rộng (W)</span>
+                  <ElInputNumber v-model="productForm.standardWidth" :min="0.01" :step="0.1" />
+                </div>
+                <div class="dim-field">
+                  <span class="dim-label">Chiều cao (H)</span>
+                  <ElInputNumber v-model="productForm.standardHeight" :min="0.01" :step="0.01" />
+                </div>
               </div>
             </ElFormItem>
             <ElFormItem label="Trọng lượng chuẩn (kg)">
@@ -635,33 +678,67 @@ onMounted(() => {
             <span v-else class="text-gray">Chưa chọn sản phẩm</span>
           </div>
         </ElFormItem>
-        <ElFormItem label="Số lượng" required>
-          <ElInputNumber v-model="itemForm.quantity" :min="1" />
-        </ElFormItem>
-        <ElFormItem label="Ngày sản xuất" required>
-          <ElDatePicker
-            v-model="itemForm.manufacturingDate"
-            type="date"
-            placeholder="Chọn ngày sản xuất"
-            value-format="YYYY-MM-DD"
-          />
-        </ElFormItem>
-        <ElFormItem label="Ngày hết hạn">
-          <ElDatePicker
-            v-model="itemForm.expiryDate"
-            type="date"
-            placeholder="Chọn ngày hết hạn (nếu có)"
-            value-format="YYYY-MM-DD"
-          />
-        </ElFormItem>
-        <ElFormItem label="Đơn giá (VNĐ)" required>
-          <ElInputNumber v-model="itemForm.unitPrice" :min="0.01" :step="1000" />
-        </ElFormItem>
-        <ElFormItem label="Thành tiền (VNĐ)" required>
-          <ElInputNumber v-model="itemForm.totalAmount" :min="0.01" :step="1000" />
-        </ElFormItem>
-        <ElFormItem label="Số lô">
-          <ElInput v-model="itemForm.batchNumber" />
+        <ElRow :gutter="20">
+          <ElCol :xs="24" :md="12">
+            <ElFormItem :label="quantityLabel" required>
+              <ElInputNumber v-model="itemForm.quantity" :min="1" />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="24" :md="12">
+            <ElFormItem label="Số lô">
+              <ElInput v-model="itemForm.batchNumber" />
+            </ElFormItem>
+          </ElCol>
+        </ElRow>
+        <ElRow :gutter="20">
+          <ElCol :xs="24" :md="12">
+            <ElFormItem label="Ngày sản xuất" required>
+              <ElDatePicker
+                v-model="itemForm.manufacturingDate"
+                type="date"
+                placeholder="Chọn ngày sản xuất"
+                value-format="YYYY-MM-DD"
+              />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="24" :md="12">
+            <ElFormItem label="Ngày hết hạn">
+              <ElDatePicker
+                v-model="itemForm.expiryDate"
+                type="date"
+                placeholder="Chọn ngày hết hạn (nếu có)"
+                value-format="YYYY-MM-DD"
+              />
+            </ElFormItem>
+          </ElCol>
+        </ElRow>
+        <ElRow :gutter="20">
+          <ElCol :xs="24" :md="12">
+            <ElFormItem label="Đơn giá (VNĐ)" required>
+              <ElInputNumber v-model="itemForm.unitPrice" :min="0.01" :step="1000" />
+            </ElFormItem>
+          </ElCol>
+          <ElCol :xs="24" :md="12">
+            <ElFormItem label="Thành tiền (VNĐ)" required>
+              <ElInputNumber v-model="itemForm.totalAmount" :min="0.01" :step="1000" />
+            </ElFormItem>
+          </ElCol>
+        </ElRow>
+        <ElFormItem label="Kích thước khối hàng trên pallet (m)">
+          <div class="inline-inputs dims-group">
+            <div class="dim-field">
+              <span class="dim-label">Chiều dài (L)</span>
+              <ElInputNumber v-model="itemForm.length" :min="0.01" :step="0.01" />
+            </div>
+            <div class="dim-field">
+              <span class="dim-label">Chiều rộng (W)</span>
+              <ElInputNumber v-model="itemForm.width" :min="0.01" :step="0.01" />
+            </div>
+            <div class="dim-field">
+              <span class="dim-label">Chiều cao (H)</span>
+              <ElInputNumber v-model="itemForm.height" :min="0.01" :step="0.01" />
+            </div>
+          </div>
         </ElFormItem>
         <ElFormItem>
           <ElButton type="primary" @click="addItemToList">
@@ -768,6 +845,22 @@ onMounted(() => {
 .inline-inputs {
   display: flex;
   align-items: center;
+}
+
+.dims-group {
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.dim-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.dim-label {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #909399;
 }
 
 .mx-5 {

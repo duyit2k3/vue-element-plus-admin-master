@@ -15,10 +15,11 @@ import { Icon } from '@/components/Icon'
 import warehouseApi, { type WarehouseListItem } from '@/api/warehouse'
 import inboundApi, { type InboundRequestListItem } from '@/api/inbound'
 import { useUserStore } from '@/store/modules/user'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 const userStore = useUserStore()
 const route = useRoute()
+const router = useRouter()
 
 const userRole = computed(() => userStore.getUserInfo?.role?.toLowerCase() || '')
 const isWarehouseOwner = computed(() => userRole.value === 'warehouse_owner')
@@ -64,8 +65,18 @@ const loadWarehouses = async () => {
   }
 }
 
-const approveInboundRequest = (_row: InboundRequestListItem) => {
-  // TODO: Duyệt yêu cầu nhập kho cho warehouse_owner
+const approveInboundRequest = (row: InboundRequestListItem) => {
+  if (row.status && row.status.toLowerCase() !== 'pending') {
+    ElMessage.warning('Chỉ có thể duyệt phiếu ở trạng thái pending')
+    return
+  }
+
+  router.push({
+    path: `/warehouse/inbound-request/${row.receiptId}/approval`,
+    query: {
+      warehouseId: selectedWarehouseId.value ? String(selectedWarehouseId.value) : undefined
+    }
+  })
 }
 
 const loadInboundRequests = async () => {
@@ -158,7 +169,12 @@ onMounted(() => {
         <ElTableColumn prop="createdByName" label="Người tạo" min-width="180" />
         <ElTableColumn v-if="isWarehouseOwner" label="Thao tác" width="160">
           <template #default="{ row }">
-            <ElButton type="success" size="small" @click="approveInboundRequest(row)">
+            <ElButton
+              v-if="row.status && row.status.toLowerCase() === 'pending'"
+              type="success"
+              size="small"
+              @click="approveInboundRequest(row)"
+            >
               <Icon icon="vi-ant-design:check-circle-outlined" />
               Duyệt
             </ElButton>

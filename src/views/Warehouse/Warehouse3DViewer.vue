@@ -224,6 +224,9 @@ const renderWarehouse = () => {
     }
   })
 
+  // Render racks
+  renderRacks()
+
   // Render pallets
   warehouseData.value.pallets?.forEach((pallet) => {
     const zone = warehouseData.value!.zones?.find((z) => z.zoneId === pallet.zoneId)
@@ -300,6 +303,45 @@ const renderZone = (zone: any) => {
   scene.add(line)
 }
 
+// Render racks and shelves
+const renderRacks = () => {
+  if (!warehouseData.value?.racks) return
+
+  warehouseData.value.racks.forEach((rack) => {
+    const zone = warehouseData.value!.zones?.find((z) => z.zoneId === rack.zoneId)
+    if (!zone || (filterByCustomer.value && zone.customerId !== filterByCustomer.value)) return
+
+    const frameGeometry = new THREE.BoxGeometry(rack.length, rack.height, rack.width)
+    const frameEdges = new THREE.EdgesGeometry(frameGeometry)
+    const frameLines = new THREE.LineSegments(
+      frameEdges,
+      new THREE.LineBasicMaterial({ color: 0x1f4e79 })
+    )
+    frameLines.position.set(
+      rack.positionX + rack.length / 2,
+      rack.positionY + rack.height / 2,
+      rack.positionZ + rack.width / 2
+    )
+    frameLines.name = `rack_${rack.rackId}_frame`
+    scene.add(frameLines)
+
+    rack.shelves?.forEach((shelf: any) => {
+      const shelfGeometry = new THREE.BoxGeometry(shelf.length, 0.05, shelf.width)
+      const shelfMaterial = new THREE.MeshPhongMaterial({ color: 0xf5f5f5 })
+      const shelfMesh = new THREE.Mesh(shelfGeometry, shelfMaterial)
+      shelfMesh.position.set(
+        rack.positionX + shelf.length / 2,
+        shelf.positionY,
+        rack.positionZ + shelf.width / 2
+      )
+      shelfMesh.castShadow = true
+      shelfMesh.receiveShadow = true
+      shelfMesh.name = `shelf_${shelf.shelfId}`
+      scene.add(shelfMesh)
+    })
+  })
+}
+
 // Render pallet
 const renderPallet = (pallet: any) => {
   const geometry = new THREE.BoxGeometry(
@@ -329,8 +371,6 @@ const renderPallet = (pallet: any) => {
 
 // Render item (box on pallet)
 const renderItem = (item: any, pallet: any) => {
-  const geometry = new THREE.BoxGeometry(item.length, item.height, item.width)
-
   // Color based on properties
   let color = 0x27ae60 // Default green
   if (item.isFragile) {
@@ -341,14 +381,22 @@ const renderItem = (item: any, pallet: any) => {
     color = 0xf39c12 // Orange for high priority
   }
 
-  const material = new THREE.MeshPhongMaterial({ color: color })
+  const isBox = typeof item.itemType === 'string' && item.itemType.toLowerCase() === 'box'
+
+  if (isBox) {
+    renderBoxItemAsCartons(item, pallet, color)
+    return
+  }
+
+  const geometry = new THREE.BoxGeometry(item.length, item.height, item.width)
+  const material = new THREE.MeshPhongMaterial({ color })
   const mesh = new THREE.Mesh(geometry, material)
 
   // Position relative to pallet
   mesh.position.set(
-    pallet.positionX + item.positionX + item.length / 2,
-    pallet.positionY + item.positionY + item.height / 2,
-    pallet.positionZ + item.positionZ + item.width / 2
+    pallet.positionX + (item.positionX || 0) + item.length / 2,
+    pallet.positionY + (item.positionY || 0) + item.height / 2,
+    pallet.positionZ + (item.positionZ || 0) + item.width / 2
   )
   mesh.userData = { type: 'item', data: item }
   mesh.name = `item_${item.itemId}`
@@ -362,6 +410,67 @@ const renderItem = (item: any, pallet: any) => {
 
   scene.add(mesh)
   scene.add(line)
+}
+
+const renderBoxItemAsCartons = (item: any, pallet: any, color: number) => {
+  const stackLength = Number(item.length) || 0
+  const stackWidth = Number(item.width) || 0
+  const stackHeight = Number(item.height) || 0
+
+  if (stackLength <= 0 || stackWidth <= 0 || stackHeight <= 0) {
+    return
+  }
+
+  const stdL = (item.standardLength ?? null) as number | null
+  const stdW = (item.standardWidth ?? null) as number | null
+  const stdH = (item.standardHeight ?? null) as number | null
+
+  let nx = 0
+  let nz = 0
+  let ny = 0
+
+  if (stdL && stdW && stdH && stdL > 0 && stdW > 0 && stdH > 0) {
+    nx = Math.max(1, Math.floor(stackLength / stdL))
+    nz = Math.max(1, Math.floor(stackWidth / stdW))
+    ny = Math.max(1, Math.floor(stackHeight / stdH))
+  } else {
+    nx = 3
+    nz = 2
+    ny = 2
+  }
+
+  nx = Math.min(nx, 6)
+  nz = Math.min(nz, 4)
+  ny = Math.min(ny, 3)
+
+  const boxLength = stackLength / nx
+  const boxWidth = stackWidth / nz
+  const boxHeight = stackHeight / ny
+
+  const geometry = new THREE.BoxGeometry(boxLength, boxHeight, boxWidth)
+  const material = new THREE.MeshPhongMaterial({ color, flatShading: true })
+
+  const baseX = pallet.positionX + (item.positionX || 0)
+  const baseY = pallet.positionY + (item.positionY || 0)
+  const baseZ = pallet.positionZ + (item.positionZ || 0)
+
+  for (let iy = 0; iy < ny; iy++) {
+    for (let iz = 0; iz < nz; iz++) {
+      for (let ix = 0; ix < nx; ix++) {
+        const mesh = new THREE.Mesh(geometry, material)
+        mesh.position.set(
+          baseX + boxLength * (ix + 0.5),
+          baseY + boxHeight * (iy + 0.5),
+          baseZ + boxWidth * (iz + 0.5)
+        )
+        mesh.userData = { type: 'item', data: item }
+        mesh.name = `item_${item.itemId}_carton`
+        mesh.castShadow = true
+
+        scene.add(mesh)
+      }
+    }
+  }
 }
 
 // Animation loop
@@ -447,6 +556,7 @@ const showPalletDetails = (pallet: any) => {
     `
     <div style="line-height: 1.8">
       <p><strong>Barcode:</strong> ${pallet.barcode}</p>
+      <p><strong>Mã vị trí:</strong> ${pallet.locationCode || 'N/A'}</p>
       <p><strong>Vị trí:</strong> (${pallet.positionX}, ${pallet.positionY}, ${pallet.positionZ})</p>
       <p><strong>Kích thước:</strong> ${pallet.palletLength}m × ${pallet.palletWidth}m × ${pallet.palletHeight}m</p>
       <p><strong>Loại:</strong> ${pallet.isGround ? 'Đặt trên nền' : 'Trên kệ'}</p>

@@ -740,6 +740,19 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
         }
       },
       {
+        path: ':id/zones/:zoneId/racks',
+        component: () => import('@/views/Warehouse/WarehouseZoneRacks.vue'),
+        name: 'WarehouseZoneRacks',
+        meta: {
+          title: 'Quản Lý Kệ Khu Vực',
+          icon: 'vi-ant-design:appstore-outlined',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/list'
+        }
+      },
+      {
         path: 'reports',
         component: () => import('@/views/Warehouse/WarehouseReports.vue'),
         name: 'WarehouseReports',
@@ -765,6 +778,18 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
         name: 'WarehouseInboundRequestCreate',
         meta: {
           title: 'Tạo Yêu Cầu Nhập Kho',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/inbound-request'
+        }
+      },
+      {
+        path: 'inbound-request/:receiptId/approval',
+        component: () => import('@/views/Warehouse/WarehouseInboundApproval.vue'),
+        name: 'WarehouseInboundApproval',
+        meta: {
+          title: 'Duyệt Yêu Cầu Nhập Kho',
           noCache: true,
           hidden: true,
           canTo: true,

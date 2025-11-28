@@ -13,6 +13,23 @@ const warehouseApi = {
   },
   getWarehousesByCustomer: (customerId: number) => {
     return request.get({ url: `/Warehouse/customer/${customerId}` })
+  },
+
+  // Rack management by zone
+  getZoneRacks: (zoneId: number) => {
+    return request.get({ url: `/Warehouse/zones/${zoneId}/racks` })
+  },
+  createRack: (zoneId: number, data: CreateRackRequest) => {
+    return request.post({ url: `/Warehouse/zones/${zoneId}/racks`, data })
+  },
+  updateRack: (zoneId: number, rackId: number, data: UpdateRackRequest) => {
+    return request.put({ url: `/Warehouse/zones/${zoneId}/racks/${rackId}`, data })
+  },
+  bulkUpdateRackPositions: (zoneId: number, data: BulkUpdateRackPositionsRequest) => {
+    return request.put({ url: `/Warehouse/zones/${zoneId}/racks/positions`, data })
+  },
+  deleteRack: (zoneId: number, rackId: number) => {
+    return request.delete({ url: `/Warehouse/zones/${zoneId}/racks/${rackId}` })
   }
 }
 
@@ -57,10 +74,51 @@ export interface Rack {
   shelves: Shelf[]
 }
 
+export interface RackDto {
+  rackId: number
+  zoneId: number
+  rackName?: string | null
+  positionX: number
+  positionY: number
+  positionZ: number
+  length: number
+  width: number
+  height: number
+  maxShelves?: number | null
+}
+
+export interface CreateRackRequest {
+  rackName?: string | null
+  positionX: number
+  positionZ: number
+  length: number
+  width: number
+  height: number
+  maxShelves?: number | null
+}
+
+export interface UpdateRackRequest {
+  rackName?: string | null
+  positionX: number
+  positionZ: number
+  height?: number | null
+}
+
+export interface RackPositionUpdateItem {
+  rackId: number
+  positionX: number
+  positionZ: number
+}
+
+export interface BulkUpdateRackPositionsRequest {
+  racks: RackPositionUpdateItem[]
+}
+
 export interface PalletLocation {
   locationId: number
   palletId: number
   barcode: string | null
+  locationCode?: string | null
   zoneId: number
   shelfId: number | null
   positionX: number
@@ -89,6 +147,9 @@ export interface ItemAllocation {
   length: number
   width: number
   height: number
+  standardLength?: number | null
+  standardWidth?: number | null
+  standardHeight?: number | null
   weight: number | null
   shape: string | null
   priorityLevel: number | null

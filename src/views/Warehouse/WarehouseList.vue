@@ -55,10 +55,14 @@ const columns = reactive<TableColumn[]>([
 const { tableRegister, tableState, tableMethods } = useTable({
   fetchDataApi: async () => {
     const userInfo = userStore.getUserInfo
-    const res =
-      userInfo?.role === 'warehouse_owner'
-        ? await warehouseApi.getWarehousesByOwner(userInfo.accountId!)
-        : await warehouseApi.getAllWarehouses()
+    let res: any
+    if (userInfo?.role === 'warehouse_owner') {
+      res = await warehouseApi.getWarehousesByOwner(userInfo.accountId!)
+    } else if (userInfo?.role === 'customer') {
+      res = await warehouseApi.getWarehousesByCustomer(userInfo.accountId!)
+    } else {
+      res = await warehouseApi.getAllWarehouses()
+    }
 
     if (res.statusCode === 200 || res.code === 0) {
       return {

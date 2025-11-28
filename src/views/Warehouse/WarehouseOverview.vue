@@ -24,10 +24,19 @@ const loadWarehouses = async () => {
   loading.value = true
   try {
     const userInfo = userStore.getUserInfo
-    const res =
-      userInfo?.role === 'warehouse_owner'
-        ? await warehouseApi.getWarehousesByOwner(userInfo.accountId!)
-        : await warehouseApi.getAllWarehouses()
+    if (!userInfo) {
+      loading.value = false
+      return
+    }
+
+    let res: any
+    if (userInfo.role === 'warehouse_owner') {
+      res = await warehouseApi.getWarehousesByOwner(userInfo.accountId!)
+    } else if (userInfo.role === 'customer') {
+      res = await warehouseApi.getWarehousesByCustomer(userInfo.accountId!)
+    } else {
+      res = await warehouseApi.getAllWarehouses()
+    }
 
     if (res.statusCode === 200 || res.code === 0) {
       warehouses.value = res.data || []
@@ -112,7 +121,7 @@ onMounted(() => {
               <Icon icon="vi-ant-design:file-text-outlined" />
               Xem Báo Cáo
             </ElButton>
-            <ElButton type="warning" @click="push('/warehouse/inbound-request')">
+            <ElButton type="warning" @click="push('/warehouse/inbound-request/create')">
               <Icon icon="vi-ant-design:plus-square-outlined" />
               Tạo Yêu Cầu Nhập Kho
             </ElButton>
