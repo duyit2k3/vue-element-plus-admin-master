@@ -371,8 +371,20 @@ const renderPallet = (pallet: any) => {
 
 // Render item (box on pallet)
 const renderItem = (item: any, pallet: any) => {
-  // Color based on properties
-  let color = 0x27ae60 // Default green
+  const itemType = typeof item.itemType === 'string' ? item.itemType.toLowerCase() : ''
+  const shape = typeof item.shape === 'string' ? item.shape.toLowerCase() : ''
+  const isBox = itemType === 'box'
+  const isBag = itemType === 'bag' || shape === 'bag' || shape === 'sack' || shape === 'bao'
+
+  // Color based on properties (ưu tiên loại hàng)
+  let color = 0x3498db // default khác
+  if (isBag) {
+    color = 0x27ae60 // bag: xanh lá
+  } else if (isBox) {
+    color = 0xe67e22 // box: cam
+  }
+
+  // Override theo thuộc tính đặc biệt
   if (item.isFragile) {
     color = 0xe74c3c // Red for fragile
   } else if (item.isHeavy) {
@@ -381,9 +393,7 @@ const renderItem = (item: any, pallet: any) => {
     color = 0xf39c12 // Orange for high priority
   }
 
-  const isBox = typeof item.itemType === 'string' && item.itemType.toLowerCase() === 'box'
-
-  if (isBox) {
+  if (isBox || isBag) {
     renderBoxItemAsCartons(item, pallet, color)
     return
   }
@@ -395,7 +405,7 @@ const renderItem = (item: any, pallet: any) => {
   // Position relative to pallet
   mesh.position.set(
     pallet.positionX + (item.positionX || 0) + item.length / 2,
-    pallet.positionY + (item.positionY || 0) + item.height / 2,
+    pallet.positionY + pallet.palletHeight + (item.positionY || 0) + item.height / 2,
     pallet.positionZ + (item.positionZ || 0) + item.width / 2
   )
   mesh.userData = { type: 'item', data: item }
@@ -449,9 +459,11 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number) => {
 
   const geometry = new THREE.BoxGeometry(boxLength, boxHeight, boxWidth)
   const material = new THREE.MeshPhongMaterial({ color, flatShading: true })
+  const edgesGeometry = new THREE.EdgesGeometry(geometry)
+  const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 })
 
   const baseX = pallet.positionX + (item.positionX || 0)
-  const baseY = pallet.positionY + (item.positionY || 0)
+  const baseY = pallet.positionY + pallet.palletHeight + (item.positionY || 0)
   const baseZ = pallet.positionZ + (item.positionZ || 0)
 
   for (let iy = 0; iy < ny; iy++) {
@@ -467,7 +479,13 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number) => {
         mesh.name = `item_${item.itemId}_carton`
         mesh.castShadow = true
 
+        const edgeLines = new THREE.LineSegments(edgesGeometry, edgeMaterial)
+        edgeLines.position.copy(mesh.position)
+        edgeLines.userData = mesh.userData
+        edgeLines.name = `${mesh.name}_outline`
+
         scene.add(mesh)
+        scene.add(edgeLines)
       }
     }
   }
@@ -501,12 +519,25 @@ const onCanvasClick = (event: MouseEvent) => {
   raycaster.setFromCamera(mouse, camera)
   const intersects = raycaster.intersectObjects(scene.children, true)
 
-  if (intersects.length > 0) {
-    const object = intersects[0].object
-    if (object.userData?.type) {
-      handleObjectClick(object.userData)
+  if (!intersects.length) return
+
+  const mode = viewMode.value
+  const typePriority: string[] =
+    mode === 'zones' ? ['zone'] : mode === 'items' ? ['item'] : ['item', 'pallet', 'zone']
+
+  let targetUserData: any = null
+
+  for (const t of typePriority) {
+    const hit = intersects.find((i) => i.object.userData?.type === t)
+    if (hit) {
+      targetUserData = hit.object.userData
+      break
     }
   }
+
+  if (!targetUserData) return
+
+  handleObjectClick(targetUserData)
 }
 
 // Handle object click

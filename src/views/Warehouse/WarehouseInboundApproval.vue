@@ -158,6 +158,8 @@ const renderScene = () => {
 
     const bagGeo = new THREE.BoxGeometry(unitL, unitH, unitW)
     const bagMat = new THREE.MeshStandardMaterial({ color: 0x27ae60 })
+    const bagEdgeGeo = new THREE.EdgesGeometry(bagGeo)
+    const bagEdgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
 
     for (let idx = 0; idx < total; idx++) {
       const layer = Math.floor(idx / perLayer)
@@ -177,11 +179,15 @@ const renderScene = () => {
       bag.castShadow = true
       bag.receiveShadow = true
       palletGroup.add(bag)
+
+      const bagEdges = new THREE.LineSegments(bagEdgeGeo, bagEdgeMat)
+      bagEdges.position.copy(bag.position)
+      palletGroup.add(bagEdges)
     }
   } else {
     const blockGeo = new THREE.BoxGeometry(item.itemLength, item.itemHeight, item.itemWidth)
     const blockMat = new THREE.MeshStandardMaterial({
-      color: 0x2980b9,
+      color: 0xe67e22,
       opacity: 0.9,
       transparent: true
     })
@@ -190,6 +196,13 @@ const renderScene = () => {
     block.castShadow = true
     block.receiveShadow = true
     palletGroup.add(block)
+
+    const blockEdges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(blockGeo),
+      new THREE.LineBasicMaterial({ color: 0x000000 })
+    )
+    blockEdges.position.copy(block.position)
+    palletGroup.add(blockEdges)
   }
 
   // Khôi phục vị trí đã kéo trước đó (nếu có)
@@ -234,6 +247,7 @@ const setupDragControls = () => {
     const obj = event.object as THREE.Object3D
     // Giữ pallet trên mặt phẳng ground
     obj.position.y = 0
+    obj.position.z = 0
   })
 
   dragControls.addEventListener('dragend', () => {

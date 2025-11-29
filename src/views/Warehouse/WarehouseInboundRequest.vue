@@ -418,6 +418,18 @@ const submitRequest = async () => {
       )
       items.value = []
       notes.value = ''
+      selectedPalletId.value = undefined
+      createdPallets.value = []
+      palletFromTemplateForm.templateId = undefined
+      palletFromTemplateForm.barcode = ''
+      palletFromTemplateForm.palletType = ''
+      customPalletForm.barcode = ''
+      customPalletForm.length = 1
+      customPalletForm.width = 1
+      customPalletForm.height = 0.15
+      customPalletForm.maxWeight = 1000
+      customPalletForm.maxStackHeight = 1.5
+      customPalletForm.palletType = ''
       // Có thể điều hướng tới trang danh sách yêu cầu trong tương lai
     }
   } catch (error: any) {

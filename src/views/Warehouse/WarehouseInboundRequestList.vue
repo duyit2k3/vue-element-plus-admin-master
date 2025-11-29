@@ -9,7 +9,8 @@ import {
   ElButton,
   ElTable,
   ElTableColumn,
-  ElMessage
+  ElMessage,
+  ElMessageBox
 } from 'element-plus'
 import { Icon } from '@/components/Icon'
 import warehouseApi, { type WarehouseListItem } from '@/api/warehouse'
@@ -77,6 +78,47 @@ const approveInboundRequest = (row: InboundRequestListItem) => {
       warehouseId: selectedWarehouseId.value ? String(selectedWarehouseId.value) : undefined
     }
   })
+}
+
+const handleReject = async (row: InboundRequestListItem) => {
+  if (!row.receiptId) return
+
+  if (!row.status || row.status.toLowerCase() !== 'pending') {
+    ElMessage.warning('Chỉ có thể từ chối phiếu ở trạng thái pending')
+    return
+  }
+
+  try {
+    const { value, action } = await ElMessageBox.prompt(
+      'Nhập lý do từ chối yêu cầu này',
+      'Từ chối yêu cầu',
+      {
+        confirmButtonText: 'Từ chối',
+        cancelButtonText: 'Hủy',
+        type: 'warning',
+        inputPlaceholder: 'Ví dụ: Thông tin hàng hóa chưa đầy đủ, cần bổ sung ...',
+        inputType: 'textarea',
+        inputValidator: (val: string) => {
+          if (!val || !val.trim()) return 'Vui lòng nhập lý do từ chối'
+          return true
+        }
+      }
+    )
+
+    if (action !== 'confirm') return
+
+    await inboundApi.updateInboundRequestStatus(row.receiptId, {
+      status: 'cancelled',
+      notes: value.trim()
+    })
+
+    ElMessage.success('Đã từ chối yêu cầu nhập kho')
+    await loadInboundRequests()
+  } catch (error: any) {
+    // Bỏ qua nếu user hủy dialog
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error('Không thể từ chối yêu cầu, vui lòng thử lại')
+  }
 }
 
 const loadInboundRequests = async () => {
@@ -166,8 +208,21 @@ onMounted(() => {
         <ElTableColumn prop="status" label="Trạng thái" width="120" />
         <ElTableColumn prop="totalItems" label="Số hàng" width="100" />
         <ElTableColumn prop="totalPallets" label="Số pallet" width="110" />
+        <ElTableColumn label="Lý do / Ghi chú" min-width="240">
+          <template #default="{ row }">
+            <span
+              v-if="row.notes"
+              :style="
+                row.status && row.status.toLowerCase() === 'cancelled' ? 'color: #f56c6c' : ''
+              "
+            >
+              {{ row.notes }}
+            </span>
+            <span v-else class="text-gray">—</span>
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="createdByName" label="Người tạo" min-width="180" />
-        <ElTableColumn v-if="isWarehouseOwner" label="Thao tác" width="160">
+        <ElTableColumn v-if="isWarehouseOwner" label="Thao tác" width="220">
           <template #default="{ row }">
             <ElButton
               v-if="row.status && row.status.toLowerCase() === 'pending'"
@@ -177,6 +232,16 @@ onMounted(() => {
             >
               <Icon icon="vi-ant-design:check-circle-outlined" />
               Duyệt
+            </ElButton>
+            <ElButton
+              v-if="row.status && row.status.toLowerCase() === 'pending'"
+              type="danger"
+              size="small"
+              class="ml-5"
+              @click="handleReject(row)"
+            >
+              <Icon icon="vi-ant-design:stop-outlined" />
+              Từ chối
             </ElButton>
           </template>
         </ElTableColumn>
