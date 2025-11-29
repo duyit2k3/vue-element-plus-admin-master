@@ -54,7 +54,7 @@ let raycaster: THREE.Raycaster
 let mouse: THREE.Vector2
 
 // UI State
-const viewMode = ref<'all' | 'zones' | 'items'>('all')
+const viewMode = ref<'zones' | 'items' | ''>('')
 const showGrid = ref(true)
 const showLabels = ref(false)
 const selectedObject = ref<any>(null)
@@ -235,15 +235,13 @@ const renderWarehouse = () => {
   })
 
   // Render items if in items view mode
-  if (viewMode.value === 'items' || viewMode.value === 'all') {
-    warehouseData.value.items?.forEach((item) => {
-      const pallet = warehouseData.value!.pallets?.find((p) => p.palletId === item.palletId)
-      if (!pallet) return
-      const zone = warehouseData.value!.zones?.find((z) => z.zoneId === pallet.zoneId)
-      if (!zone || (filterByCustomer.value && zone.customerId !== filterByCustomer.value)) return
-      renderItem(item, pallet)
-    })
-  }
+  warehouseData.value.items?.forEach((item) => {
+    const pallet = warehouseData.value!.pallets?.find((p) => p.palletId === item.palletId)
+    if (!pallet) return
+    const zone = warehouseData.value!.zones?.find((z) => z.zoneId === pallet.zoneId)
+    if (!zone || (filterByCustomer.value && zone.customerId !== filterByCustomer.value)) return
+    renderItem(item, pallet)
+  })
 }
 
 // Render warehouse boundary (wireframe)
@@ -512,6 +510,12 @@ const onWindowResize = () => {
 const onCanvasClick = (event: MouseEvent) => {
   if (!container.value) return
 
+  const mode = viewMode.value
+  if (mode !== 'zones' && mode !== 'items') {
+    // Chỉ cho phép xem chi tiết khi người dùng đã chọn rõ Khu vực hoặc Hàng hóa
+    return
+  }
+
   const rect = container.value.getBoundingClientRect()
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
@@ -521,9 +525,7 @@ const onCanvasClick = (event: MouseEvent) => {
 
   if (!intersects.length) return
 
-  const mode = viewMode.value
-  const typePriority: string[] =
-    mode === 'zones' ? ['zone'] : mode === 'items' ? ['item'] : ['item', 'pallet', 'zone']
+  const typePriority: string[] = mode === 'zones' ? ['zone'] : ['item']
 
   let targetUserData: any = null
 
@@ -741,7 +743,6 @@ onBeforeUnmount(() => {
           <div class="control-section">
             <h4>Chế độ xem</h4>
             <ElRadioGroup v-model="viewMode" size="small" @change="changeViewMode">
-              <ElRadioButton value="all">Tất cả</ElRadioButton>
               <ElRadioButton value="zones">Khu vực</ElRadioButton>
               <ElRadioButton value="items">Hàng hóa</ElRadioButton>
             </ElRadioGroup>
@@ -831,33 +832,6 @@ onBeforeUnmount(() => {
         <!-- 3D Canvas -->
         <div class="canvas-wrapper">
           <div v-loading="loading" ref="container" class="canvas-container"></div>
-
-          <!-- Info overlay -->
-          <div v-if="selectedObject" class="info-overlay">
-            <ElCard shadow="always">
-              <template #header>
-                <div class="info-header">
-                  <span class="font-bold">
-                    {{
-                      selectedObject.itemName || selectedObject.zoneName || selectedObject.barcode
-                    }}
-                  </span>
-                  <ElButton text @click="selectedObject = null">
-                    <Icon icon="vi-ep:close" />
-                  </ElButton>
-                </div>
-              </template>
-              <div class="info-content">
-                <p
-                  ><strong>Loại:</strong>
-                  {{ selectedObject.itemType || selectedObject.zoneType || 'Pallet' }}</p
-                >
-                <p v-if="selectedObject.customerName">
-                  <strong>Khách hàng:</strong> {{ selectedObject.customerName }}
-                </p>
-              </div>
-            </ElCard>
-          </div>
 
           <!-- Help Text -->
           <div class="help-text">

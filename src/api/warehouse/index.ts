@@ -185,4 +185,7 @@ export interface WarehouseListItem {
   warehouseType: string | null
   status: string | null
   createdAt: string | null
+  zoneId?: number | null
+  zoneName?: string | null
+  zoneType?: string | null
 }

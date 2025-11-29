@@ -172,7 +172,11 @@ onMounted(() => {
             <ElOption
               v-for="w in warehouses"
               :key="w.warehouseId"
-              :label="w.warehouseName || `Kho #${w.warehouseId}`"
+              :label="
+                w.zoneName
+                  ? `${w.warehouseName || `Kho #${w.warehouseId}`} - ${w.zoneName}`
+                  : w.warehouseName || `Kho #${w.warehouseId}`
+              "
               :value="w.warehouseId"
             />
           </ElSelect>
@@ -203,7 +207,17 @@ onMounted(() => {
         v-loading="loadingInboundRequests"
       >
         <ElTableColumn prop="receiptNumber" label="Mã phiếu" width="180" />
-        <ElTableColumn prop="warehouseName" label="Kho" min-width="200" />
+        <ElTableColumn prop="warehouseName" label="Kho" min-width="180" />
+        <ElTableColumn label="Khu vực" min-width="160">
+          <template #default="{ row }">
+            <span v-if="row.zoneName">
+              {{ row.zoneName }}
+              <span v-if="row.zoneId">(#{{ row.zoneId }})</span>
+            </span>
+            <span v-else-if="row.zoneId">Zone #{{ row.zoneId }}</span>
+            <span v-else class="text-gray">—</span>
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="inboundDate" label="Ngày yêu cầu" width="160" />
         <ElTableColumn prop="status" label="Trạng thái" width="120" />
         <ElTableColumn prop="totalItems" label="Số hàng" width="100" />

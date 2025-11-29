@@ -423,6 +423,13 @@ const handleBack = () => {
             Kho:
             <strong>{{ approvalData.warehouseName || `#${approvalData.warehouseId}` }}</strong>
           </span>
+          <span v-if="approvalData.zoneId">
+            Khu vực:
+            <strong>
+              {{ approvalData.zoneName || `Zone #${approvalData.zoneId}` }} (ID:
+              {{ approvalData.zoneId }})
+            </strong>
+          </span>
           <span>
             Khách hàng:
             <strong>{{ approvalData.customerName || `#${approvalData.customerId}` }}</strong>

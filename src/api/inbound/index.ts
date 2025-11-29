@@ -16,6 +16,7 @@ export interface InboundItemRequest {
 
 export interface CreateInboundRequestRequest {
   warehouseId: number
+  zoneId?: number
   items: InboundItemRequest[]
   notes?: string
 }
@@ -36,6 +37,8 @@ export interface InboundRequestListItem {
   receiptNumber: string
   warehouseId: number
   warehouseName?: string | null
+  zoneId?: number | null
+  zoneName?: string | null
   customerId: number
   customerName?: string | null
   totalItems: number
@@ -69,6 +72,8 @@ export interface InboundRequestDetail {
   receiptNumber: string
   warehouseId: number
   warehouseName?: string | null
+  zoneId?: number | null
+  zoneName?: string | null
   customerId: number
   customerName?: string | null
   totalItems: number
@@ -108,6 +113,8 @@ export interface InboundApprovalView {
   receiptNumber: string
   warehouseId: number
   warehouseName?: string | null
+  zoneId?: number | null
+  zoneName?: string | null
   customerId: number
   customerName?: string | null
   status?: string | null

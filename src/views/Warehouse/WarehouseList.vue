@@ -26,6 +26,11 @@ const columns = reactive<TableColumn[]>([
     minWidth: '200px'
   },
   {
+    field: 'zoneName',
+    label: 'Khu Vực',
+    minWidth: '180px'
+  },
+  {
     field: 'ownerName',
     label: 'Chủ Kho',
     minWidth: '150px'

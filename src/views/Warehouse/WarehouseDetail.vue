@@ -20,6 +20,7 @@ const canCreateInbound = computed(() => userRole.value === 'customer')
 const canViewInbound = computed(() =>
   ['customer', 'warehouse_owner', 'admin'].includes(userRole.value)
 )
+const canManageWarehouse = computed(() => ['warehouse_owner', 'admin'].includes(userRole.value))
 
 const goToCreateInbound = () => {
   push({
@@ -188,15 +189,23 @@ onMounted(() => {
               <Icon icon="vi-ant-design:deployment-unit-outlined" />
               Xem Kho 3D
             </ElButton>
-            <ElButton type="primary" @click="push(`/warehouse/${warehouseId}/items`)">
+            <ElButton
+              v-if="canManageWarehouse"
+              type="primary"
+              @click="push(`/warehouse/${warehouseId}/items`)"
+            >
               <Icon icon="vi-ant-design:inbox-outlined" />
               Quản Lý Hàng Hóa
             </ElButton>
-            <ElButton type="warning" @click="push(`/warehouse/${warehouseId}/zones`)">
+            <ElButton
+              v-if="canManageWarehouse"
+              type="warning"
+              @click="push(`/warehouse/${warehouseId}/zones`)"
+            >
               <Icon icon="vi-ant-design:layout-outlined" />
               Quản Lý Khu Vực
             </ElButton>
-            <ElButton type="info" @click="push('/warehouse/reports')">
+            <ElButton v-if="canManageWarehouse" type="info" @click="push('/warehouse/reports')">
               <Icon icon="vi-ant-design:file-text-outlined" />
               Xem Báo Cáo
             </ElButton>

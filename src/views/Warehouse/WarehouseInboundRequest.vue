@@ -19,7 +19,7 @@ import {
   ElMessage
 } from 'element-plus'
 import { Icon } from '@/components/Icon'
-import warehouseApi, { type WarehouseListItem } from '@/api/warehouse'
+import warehouseApi, { type WarehouseListItem, type WarehouseZone } from '@/api/warehouse'
 import palletApi, {
   type PalletTemplate,
   type PalletViewModel,
@@ -41,9 +41,12 @@ const route = useRoute()
 // Warehouse
 const warehouses = ref<WarehouseListItem[]>([])
 const selectedWarehouseId = ref<number | undefined>(undefined)
+const selectedZoneId = ref<number | undefined>(undefined)
+const selectedWarehouseKey = ref<string | undefined>(undefined)
 const loadingWarehouses = ref(false)
 const inboundRequests = ref<InboundRequestListItem[]>([])
 const loadingInboundRequests = ref(false)
+const customerZones = ref<WarehouseZone[]>([])
 
 const loadWarehouses = async () => {
   loadingWarehouses.value = true
@@ -62,10 +65,12 @@ const loadWarehouses = async () => {
     }
     if (res && (res.statusCode === 200 || res.code === 0)) {
       warehouses.value = (res.data || []) as WarehouseListItem[]
-      if (!selectedWarehouseId.value && warehouses.value.length > 0) {
+
+      if (!selectedWarehouseKey.value && warehouses.value.length > 0) {
         const qId = route.query.warehouseId ? Number(route.query.warehouseId) : undefined
         const matched = qId ? warehouses.value.find((w) => w.warehouseId === qId) : undefined
-        selectedWarehouseId.value = matched ? matched.warehouseId : warehouses.value[0].warehouseId
+        const first = matched ?? warehouses.value[0]
+        selectedWarehouseKey.value = `${first.warehouseId}:${first.zoneId ?? 0}`
       }
     }
   } catch (error) {
@@ -90,6 +95,24 @@ const loadInboundRequests = async () => {
     ElMessage.error('Không thể tải danh sách yêu cầu nhập kho')
   } finally {
     loadingInboundRequests.value = false
+  }
+}
+
+const loadCustomerZonesForSelectedWarehouse = async () => {
+  customerZones.value = []
+  if (!selectedWarehouseId.value) return
+  const userInfo = userStore.getUserInfo
+  if (!userInfo) return
+  try {
+    const res: any = await warehouseApi.getWarehouse3DData(selectedWarehouseId.value)
+    if (res && (res.statusCode === 200 || res.code === 0)) {
+      const data = res.data as { zones?: WarehouseZone[] }
+      const zones = data?.zones || []
+      // 1 customer có thể có nhiều khu vực trong 1 kho, chỉ lấy các zone thuộc customer hiện tại
+      customerZones.value = zones.filter((z) => z.customerId === userInfo.accountId)
+    }
+  } catch {
+    // Nếu không tải được zones thì giữ nguyên danh sách sản phẩm (không filter cứng)
   }
 }
 
@@ -224,6 +247,46 @@ const loadProducts = async () => {
   }
 }
 
+const effectiveZones = computed(() => {
+  if (selectedZoneId.value) {
+    return customerZones.value.filter((z) => z.zoneId === selectedZoneId.value)
+  }
+  return customerZones.value
+})
+
+const hasAnyZone = computed(() => effectiveZones.value.length > 0)
+const hasRackZone = computed(() =>
+  effectiveZones.value.some((z) => (z.zoneType || '').toLowerCase() === 'rack')
+)
+
+const canStoreBag = computed(() => hasAnyZone.value)
+const canStoreBox = computed(() => hasRackZone.value)
+
+const getProductItemType = (p: ProductViewModel) => {
+  const unitLower = (p.unit || '').toLowerCase()
+  const categoryLower = (p.category || '').toLowerCase()
+  const isBag = unitLower.includes('bao') || (!!categoryLower && categoryLower.includes('bao'))
+  return isBag ? 'bag' : 'box'
+}
+
+const filteredProducts = computed(() => {
+  // Nếu chưa có thông tin zone, tạm thời trả về toàn bộ products
+  if (!hasAnyZone.value) {
+    return products.value
+  }
+
+  return products.value.filter((p) => {
+    const type = getProductItemType(p)
+    if (type === 'box' && !canStoreBox.value) {
+      return false
+    }
+    if (type === 'bag' && !canStoreBag.value) {
+      return false
+    }
+    return true
+  })
+})
+
 const handleSelectProduct = (productId: number) => {
   const p = products.value.find((x) => x.productId === productId)
   if (!p) return
@@ -305,10 +368,27 @@ watch(
   }
 )
 
+const syncSelectedWarehouse = () => {
+  if (!selectedWarehouseKey.value) {
+    selectedWarehouseId.value = undefined
+    selectedZoneId.value = undefined
+    return
+  }
+
+  const [widStr, zidStr] = selectedWarehouseKey.value.split(':')
+  const wid = Number(widStr)
+  const zid = Number(zidStr)
+
+  selectedWarehouseId.value = Number.isFinite(wid) ? wid : undefined
+  selectedZoneId.value = Number.isFinite(zid) && zid > 0 ? zid : undefined
+}
+
 watch(
-  () => selectedWarehouseId.value,
+  () => selectedWarehouseKey.value,
   () => {
+    syncSelectedWarehouse()
     loadInboundRequests()
+    loadCustomerZonesForSelectedWarehouse()
   }
 )
 
@@ -405,6 +485,7 @@ const submitRequest = async () => {
   }
   const payload: CreateInboundRequestRequest = {
     warehouseId: selectedWarehouseId.value,
+    zoneId: selectedZoneId.value,
     items: items.value,
     notes: notes.value || undefined
   }
@@ -458,7 +539,7 @@ onMounted(() => {
       <ElForm label-width="140px">
         <ElFormItem label="Kho" required>
           <ElSelect
-            v-model="selectedWarehouseId"
+            v-model="selectedWarehouseKey"
             placeholder="Chọn kho đã thuê"
             :loading="loadingWarehouses"
             filterable
@@ -466,9 +547,13 @@ onMounted(() => {
           >
             <ElOption
               v-for="w in warehouses"
-              :key="w.warehouseId"
-              :label="w.warehouseName || `Kho #${w.warehouseId}`"
-              :value="w.warehouseId"
+              :key="w.zoneId ?? w.warehouseId"
+              :label="
+                w.zoneName
+                  ? `${w.warehouseName || `Kho #${w.warehouseId}`} - ${w.zoneName}`
+                  : w.warehouseName || `Kho #${w.warehouseId}`
+              "
+              :value="`${w.warehouseId}:${w.zoneId ?? 0}`"
             />
           </ElSelect>
         </ElFormItem>
@@ -597,12 +682,19 @@ onMounted(() => {
                 @change="handleSelectProduct"
               >
                 <ElOption
-                  v-for="p in products"
+                  v-for="p in filteredProducts"
                   :key="p.productId"
                   :label="`${p.productCode} - ${p.productName}`"
                   :value="p.productId"
                 />
               </ElSelect>
+            </ElFormItem>
+            <ElFormItem>
+              <div class="text-gray text-sm">
+                Lưu ý: Nếu bạn chỉnh sửa thông tin mẫu sản phẩm bên dưới, vui lòng bấm
+                <strong>"Lưu thành sản phẩm mới"</strong> trước khi thêm hàng vào yêu cầu. Nếu
+                không, phiếu inbound sẽ sử dụng thông tin của sản phẩm cũ đã lưu.
+              </div>
             </ElFormItem>
             <ElFormItem label="Mã sản phẩm" required>
               <ElInput v-model="productForm.productCode" />
@@ -828,6 +920,16 @@ onMounted(() => {
       >
         <ElTableColumn prop="receiptNumber" label="Mã phiếu" width="180" />
         <ElTableColumn prop="warehouseName" label="Kho" min-width="200" />
+        <ElTableColumn label="Khu vực" min-width="160">
+          <template #default="{ row }">
+            <span v-if="row.zoneName">
+              {{ row.zoneName }}
+              <span v-if="row.zoneId">(#{{ row.zoneId }})</span>
+            </span>
+            <span v-else-if="row.zoneId">Zone #{{ row.zoneId }}</span>
+            <span v-else class="text-gray">—</span>
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="inboundDate" label="Ngày yêu cầu" width="160" />
         <ElTableColumn prop="status" label="Trạng thái" width="120" />
         <ElTableColumn prop="totalItems" label="Số hàng" width="100" />

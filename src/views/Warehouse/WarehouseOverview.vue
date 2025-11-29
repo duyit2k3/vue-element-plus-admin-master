@@ -147,13 +147,17 @@ onMounted(() => {
           <div class="warehouse-grid">
             <ElCard
               v-for="warehouse in warehouses.slice(0, 6)"
-              :key="warehouse.warehouseId"
+              :key="warehouse.zoneId ?? warehouse.warehouseId"
               shadow="hover"
               class="warehouse-card"
             >
               <div class="warehouse-info">
                 <h3>{{ warehouse.warehouseName || 'Chưa đặt tên' }}</h3>
                 <p class="text-gray-500">{{ warehouse.ownerName }}</p>
+                <p v-if="warehouse.zoneName" class="text-sm text-gray-500">
+                  Khu vực: {{ warehouse.zoneName }}
+                  <span v-if="warehouse.zoneType">({{ warehouse.zoneType }})</span>
+                </p>
                 <p class="text-sm">
                   <Icon icon="vi-ant-design:container-outlined" />
                   {{ warehouse.length }}m × {{ warehouse.width }}m × {{ warehouse.height }}m
