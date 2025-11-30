@@ -185,24 +185,47 @@ const renderScene = () => {
       palletGroup.add(bagEdges)
     }
   } else {
-    const blockGeo = new THREE.BoxGeometry(item.itemLength, item.itemHeight, item.itemWidth)
-    const blockMat = new THREE.MeshStandardMaterial({
+    const unitL = item.unitLength || item.itemLength
+    const unitW = item.unitWidth || item.itemWidth
+    const unitH = item.unitHeight || item.itemHeight
+
+    const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
+    const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
+    const perLayer = Math.max(1, maxPerRow * maxPerCol)
+    const total = Math.max(1, item.quantity)
+
+    const boxGeo = new THREE.BoxGeometry(unitL, unitH, unitW)
+    const boxMat = new THREE.MeshStandardMaterial({
       color: 0xe67e22,
-      opacity: 0.9,
+      opacity: 0.95,
       transparent: true
     })
-    const block = new THREE.Mesh(blockGeo, blockMat)
-    block.position.set(0, item.palletHeight + item.itemHeight / 2, 0)
-    block.castShadow = true
-    block.receiveShadow = true
-    palletGroup.add(block)
+    const boxEdgeGeo = new THREE.EdgesGeometry(boxGeo)
+    const boxEdgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
 
-    const blockEdges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(blockGeo),
-      new THREE.LineBasicMaterial({ color: 0x000000 })
-    )
-    blockEdges.position.copy(block.position)
-    palletGroup.add(blockEdges)
+    for (let idx = 0; idx < total; idx++) {
+      const layer = Math.floor(idx / perLayer)
+      const posInLayer = idx % perLayer
+      const row = Math.floor(posInLayer / maxPerRow)
+      const col = posInLayer % maxPerRow
+
+      const xStart = -item.palletLength / 2 + unitL / 2
+      const zStart = -item.palletWidth / 2 + unitW / 2
+
+      const x = xStart + col * unitL
+      const z = zStart + row * unitW
+      const y = item.palletHeight + unitH / 2 + layer * unitH
+
+      const box = new THREE.Mesh(boxGeo, boxMat)
+      box.position.set(x, y, z)
+      box.castShadow = true
+      box.receiveShadow = true
+      palletGroup.add(box)
+
+      const boxEdges = new THREE.LineSegments(boxEdgeGeo, boxEdgeMat)
+      boxEdges.position.copy(box.position)
+      palletGroup.add(boxEdges)
+    }
   }
 
   // Khôi phục vị trí đã kéo trước đó (nếu có)
@@ -436,38 +459,30 @@ const handleBack = () => {
           </span>
         </div>
       </ElCol>
-      <ElCol :span="12" class="text-right">
-        <ElButton @click="handleBack">
-          <Icon icon="vi-ep:arrow-left" />
-          Quay lại danh sách
-        </ElButton>
-        <ElButton
-          v-if="approvalData?.status?.toLowerCase() === 'pending'"
-          type="success"
-          :loading="optimizing"
-          @click="handleOptimize"
-        >
-          <Icon icon="vi-ep:magic-stick" />
-          Tối ưu tự động
-        </ElButton>
-        <ElButton
-          v-if="approvalData?.status?.toLowerCase() === 'pending'"
-          type="primary"
-          :loading="approving"
-          @click="handleApprove"
-        >
-          <Icon icon="vi-ant-design:check-circle-outlined" />
-          Duyệt & Xem Kho 3D
-        </ElButton>
-        <ElButton
-          v-if="approvalData?.status?.toLowerCase() === 'pending'"
-          type="danger"
-          :loading="rejecting"
-          @click="handleReject"
-        >
-          <Icon icon="vi-ep:close" />
-          Từ chối yêu cầu
-        </ElButton>
+      <ElCol :span="12">
+        <div class="header-actions">
+          <ElButton class="header-actions__back" @click="handleBack">
+            <Icon icon="vi-ep:arrow-left" />
+            Quay lại danh sách
+          </ElButton>
+          <div
+            v-if="approvalData?.status?.toLowerCase() === 'pending'"
+            class="header-actions__main"
+          >
+            <ElButton type="success" :loading="optimizing" @click="handleOptimize">
+              <Icon icon="vi-ep:magic-stick" />
+              Tối ưu tự động
+            </ElButton>
+            <ElButton type="primary" :loading="approving" @click="handleApprove">
+              <Icon icon="vi-ant-design:check-circle-outlined" />
+              Duyệt & Xem Kho 3D
+            </ElButton>
+            <ElButton type="danger" :loading="rejecting" @click="handleReject">
+              <Icon icon="vi-ep:close" />
+              Từ chối yêu cầu
+            </ElButton>
+          </div>
+        </div>
       </ElCol>
     </ElRow>
 
@@ -630,6 +645,24 @@ const handleBack = () => {
   color: #606266;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.header-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  &__back {
+    margin-right: 8px;
+  }
+
+  &__main {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }
 
 .text-right {

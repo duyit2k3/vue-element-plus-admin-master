@@ -130,6 +130,9 @@ export interface PalletLocation {
   palletLength: number
   palletWidth: number
   palletHeight: number
+  palletType?: string | null
+  maxWeight?: number | null
+  maxStackHeight?: number | null
 }
 
 export interface ItemAllocation {
@@ -138,23 +141,62 @@ export interface ItemAllocation {
   qrCode: string | null
   itemName: string | null
   itemType: string | null
+
+  // Product information
+  productId: number
+  productCode: string | null
+  productName: string | null
+  unit: string | null
+  category: string | null
+  standardLength?: number | null
+  standardWidth?: number | null
+  standardHeight?: number | null
+  standardWeight?: number | null
+  productDescription?: string | null
+  storageConditions?: string | null
+
+  // Customer information
   customerId: number
   customerName: string | null
+
+  // Pallet / position information
   palletId: number
   positionX: number | null
   positionY: number | null
   positionZ: number | null
+
+  // Item dimensions and properties (khối hàng trên pallet)
   length: number
   width: number
   height: number
-  standardLength?: number | null
-  standardWidth?: number | null
-  standardHeight?: number | null
   weight: number | null
   shape: string | null
   priorityLevel: number | null
   isHeavy: boolean | null
   isFragile: boolean | null
+
+  // Batch and date information
+  batchNumber?: string | null
+  manufacturingDate?: string | null
+  expiryDate?: string | null
+
+  // Commercial information
+  unitPrice?: number | null
+  totalAmount?: number | null
+  unitQuantity?: number | null
+}
+
+export interface WarehouseGate {
+  gateId: number
+  warehouseId: number
+  gateName: string | null
+  positionX: number
+  positionY: number
+  positionZ: number
+  length?: number | null
+  width?: number | null
+  height?: number | null
+  gateType: string
 }
 
 export interface Warehouse3DData {
@@ -168,10 +210,17 @@ export interface Warehouse3DData {
   warehouseType: string | null
   allowedItemTypes: string | null
   status: string | null
+  checkinPositionX?: number | null
+  checkinPositionY?: number | null
+  checkinPositionZ?: number | null
+  checkinLength?: number | null
+  checkinWidth?: number | null
+  checkinHeight?: number | null
   zones: WarehouseZone[]
   racks: Rack[]
   pallets: PalletLocation[]
   items: ItemAllocation[]
+  gates?: WarehouseGate[]
 }
 
 export interface WarehouseListItem {

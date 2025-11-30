@@ -164,7 +164,7 @@ const inboundApi = {
   createInboundRequest: (data: CreateInboundRequestRequest) => {
     return request.post<CreateInboundResponse>({ url: '/Inbound/create-request', data })
   },
-  getInboundRequests: (params?: { warehouseId?: number; status?: string }) => {
+  getInboundRequests: (params?: { warehouseId?: number; zoneId?: number; status?: string }) => {
     return request.get<InboundRequestListItem[]>({ url: '/Inbound/list', params })
   },
   getInboundRequestDetail: (receiptId: number) => {

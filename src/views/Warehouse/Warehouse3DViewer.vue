@@ -54,11 +54,12 @@ let raycaster: THREE.Raycaster
 let mouse: THREE.Vector2
 
 // UI State
-const viewMode = ref<'zones' | 'items' | ''>('')
+const viewMode = ref<'zones' | 'items' | 'pallets' | ''>('')
 const showGrid = ref(true)
 const showLabels = ref(false)
 const selectedObject = ref<any>(null)
 const filterByCustomer = ref<number | undefined>(undefined)
+const filterByZone = ref<number | undefined>(undefined)
 
 // Statistics
 const stats = computed(() => {
@@ -67,10 +68,7 @@ const stats = computed(() => {
     totalZones: warehouseData.value.zones?.length || 0,
     totalPallets: warehouseData.value.pallets?.length || 0,
     totalItems: warehouseData.value.items?.length || 0,
-    occupiedPallets:
-      warehouseData.value.pallets?.filter((p) =>
-        warehouseData.value!.items?.some((i) => i.palletId === p.palletId)
-      ).length || 0
+    totalRacks: warehouseData.value.racks?.length || 0
   }
 })
 
@@ -84,6 +82,15 @@ const customers = computed(() => {
     }
   })
   return Array.from(map.entries()).map(([id, name]) => ({ id, name }))
+})
+
+// Zone list for filter
+const zonesForFilter = computed(() => {
+  if (!warehouseData.value?.zones) return []
+  return warehouseData.value.zones.map((z) => ({
+    id: z.zoneId,
+    name: z.zoneName || `Zone #${z.zoneId}`
+  }))
 })
 
 // Load warehouse 3D data
@@ -169,7 +176,10 @@ const initThreeJS = () => {
   ground.rotation.x = -Math.PI / 2
   ground.position.set(wh.length / 2, 0, wh.width / 2)
   ground.receiveShadow = true
+  ground.name = 'ground'
   scene.add(ground)
+
+  renderCheckinAndGates()
 
   // Raycaster
   raycaster = new THREE.Raycaster()
@@ -190,38 +200,34 @@ const initThreeJS = () => {
 const renderWarehouse = () => {
   if (!warehouseData.value) return
 
-  // Clear old objects (keep lights and helpers)
+  // Xoá các object động (zone, rack, shelf, pallet, item, khung kho) nhưng giữ lại nền, lưới, cổng, bàn checkin
+  const dynamicTypes = ['zone', 'pallet', 'item']
   const objectsToRemove: THREE.Object3D[] = []
+
   scene.children.forEach((child) => {
-    if (
-      !(child instanceof THREE.Light) &&
-      child.name !== 'gridHelper' &&
-      child.type !== 'Mesh' // Don't remove ground
-    ) {
-      if (child.name && !child.name.includes('ground')) {
-        objectsToRemove.push(child)
-      }
+    const userData: any = (child as any).userData || {}
+    const type = userData.type as string | undefined
+    const name = child.name || ''
+
+    if (type && dynamicTypes.includes(type)) {
+      objectsToRemove.push(child)
+    } else if (name === 'warehouseBoundary') {
+      objectsToRemove.push(child)
+    } else if (name.startsWith('rack_') || name.startsWith('shelf_')) {
+      objectsToRemove.push(child)
     }
   })
-  objectsToRemove.forEach((obj) => scene.remove(obj))
 
-  // Remove old meshes
-  scene.children = scene.children.filter(
-    (child) =>
-      child instanceof THREE.Light ||
-      child.name === 'gridHelper' ||
-      child.name === 'ground' ||
-      child.type === 'Mesh'
-  )
+  objectsToRemove.forEach((obj) => scene.remove(obj))
 
   // Render warehouse boundary
   renderWarehouseBoundary()
 
   // Render zones
   warehouseData.value.zones?.forEach((zone) => {
-    if (!filterByCustomer.value || zone.customerId === filterByCustomer.value) {
-      renderZone(zone)
-    }
+    if (filterByZone.value && zone.zoneId !== filterByZone.value) return
+    if (filterByCustomer.value && zone.customerId !== filterByCustomer.value) return
+    renderZone(zone)
   })
 
   // Render racks
@@ -230,17 +236,106 @@ const renderWarehouse = () => {
   // Render pallets
   warehouseData.value.pallets?.forEach((pallet) => {
     const zone = warehouseData.value!.zones?.find((z) => z.zoneId === pallet.zoneId)
-    if (!zone || (filterByCustomer.value && zone.customerId !== filterByCustomer.value)) return
+    if (!zone) return
+    if (filterByZone.value && zone.zoneId !== filterByZone.value) return
+    if (filterByCustomer.value && zone.customerId !== filterByCustomer.value) return
     renderPallet(pallet)
   })
 
-  // Render items if in items view mode
+  // Render items
   warehouseData.value.items?.forEach((item) => {
     const pallet = warehouseData.value!.pallets?.find((p) => p.palletId === item.palletId)
     if (!pallet) return
     const zone = warehouseData.value!.zones?.find((z) => z.zoneId === pallet.zoneId)
-    if (!zone || (filterByCustomer.value && zone.customerId !== filterByCustomer.value)) return
+    if (!zone) return
+    if (filterByZone.value && zone.zoneId !== filterByZone.value) return
+    if (filterByCustomer.value && zone.customerId !== filterByCustomer.value) return
     renderItem(item, pallet)
+  })
+}
+
+const renderCheckinAndGates = () => {
+  if (!warehouseData.value) return
+
+  const wh = warehouseData.value
+
+  if (
+    wh.checkinPositionX !== null &&
+    wh.checkinPositionX !== undefined &&
+    wh.checkinPositionZ !== null &&
+    wh.checkinPositionZ !== undefined
+  ) {
+    const deskLength = wh.checkinLength ?? 1.5
+    const deskWidth = wh.checkinWidth ?? 0.8
+    const deskHeight = wh.checkinHeight ?? 1.0
+
+    // Bàn (khối đặc từ nền lên đến mặt bàn)
+    const deskGeo = new THREE.BoxGeometry(deskLength, deskHeight, deskWidth)
+    const deskMat = new THREE.MeshPhongMaterial({ color: 0xdcdcdc })
+    const desk = new THREE.Mesh(deskGeo, deskMat)
+    desk.position.set(wh.checkinPositionX, deskHeight / 2, wh.checkinPositionZ)
+    desk.castShadow = true
+    desk.receiveShadow = true
+    desk.name = 'checkin_desk'
+    scene.add(desk)
+
+    // Màn hình máy tính
+    const screenGeo = new THREE.BoxGeometry(0.7, 0.45, 0.03)
+    const screenMat = new THREE.MeshPhongMaterial({ color: 0x2c3e50 })
+    const screen = new THREE.Mesh(screenGeo, screenMat)
+    screen.position.set(
+      wh.checkinPositionX,
+      deskHeight + 0.35,
+      wh.checkinPositionZ - deskWidth / 2 + 0.05
+    )
+    screen.castShadow = true
+    screen.name = 'checkin_monitor'
+    scene.add(screen)
+
+    // Chân màn hình
+    const standGeo = new THREE.BoxGeometry(0.1, 0.25, 0.08)
+    const standMat = new THREE.MeshPhongMaterial({ color: 0x34495e })
+    const stand = new THREE.Mesh(standGeo, standMat)
+    stand.position.set(
+      wh.checkinPositionX,
+      deskHeight + 0.15,
+      wh.checkinPositionZ - deskWidth / 2 + 0.1
+    )
+    stand.castShadow = true
+    scene.add(stand)
+  }
+
+  // Cổng kho hiển thị như 1 khung cửa mở
+  wh.gates?.forEach((gate) => {
+    const doorWidth = Number(gate.length ?? 2)
+    const doorHeight = Number(gate.height ?? 2.2)
+    const frameThickness = Number(gate.width ?? 0.3)
+    const color = gate.gateType === 'exit' ? 0xe74c3c : 0x3498db
+    const frameMat = new THREE.MeshPhongMaterial({ color })
+
+    const group = new THREE.Group()
+
+    // Hai trụ đứng
+    const verticalGeo = new THREE.BoxGeometry(frameThickness, doorHeight, frameThickness)
+    const left = new THREE.Mesh(verticalGeo, frameMat)
+    left.position.set(-doorWidth / 2, doorHeight / 2, 0)
+    left.castShadow = true
+    const right = left.clone()
+    right.position.x = doorWidth / 2
+
+    // Thanh ngang trên
+    const topGeo = new THREE.BoxGeometry(doorWidth, frameThickness, frameThickness)
+    const top = new THREE.Mesh(topGeo, frameMat)
+    top.position.set(0, doorHeight - frameThickness / 2, 0)
+    top.castShadow = true
+
+    group.add(left)
+    group.add(right)
+    group.add(top)
+
+    group.position.set(gate.positionX, 0, gate.positionZ)
+    group.name = `gate_${gate.gateId}`
+    scene.add(group)
   })
 }
 
@@ -307,7 +402,9 @@ const renderRacks = () => {
 
   warehouseData.value.racks.forEach((rack) => {
     const zone = warehouseData.value!.zones?.find((z) => z.zoneId === rack.zoneId)
-    if (!zone || (filterByCustomer.value && zone.customerId !== filterByCustomer.value)) return
+    if (!zone) return
+    if (filterByZone.value && zone.zoneId !== filterByZone.value) return
+    if (filterByCustomer.value && zone.customerId !== filterByCustomer.value) return
 
     const frameGeometry = new THREE.BoxGeometry(rack.length, rack.height, rack.width)
     const frameEdges = new THREE.EdgesGeometry(frameGeometry)
@@ -421,39 +518,34 @@ const renderItem = (item: any, pallet: any) => {
 }
 
 const renderBoxItemAsCartons = (item: any, pallet: any, color: number) => {
-  const stackLength = Number(item.length) || 0
-  const stackWidth = Number(item.width) || 0
-  const stackHeight = Number(item.height) || 0
+  const rawStackL = Number(item.length) || 0
+  const rawStackW = Number(item.width) || 0
+  const rawStackH = Number(item.height) || 0
 
-  if (stackLength <= 0 || stackWidth <= 0 || stackHeight <= 0) {
+  if (rawStackL <= 0 || rawStackW <= 0 || rawStackH <= 0) {
     return
   }
 
+  const quantity = Math.max(1, Number(item.unitQuantity ?? 0) || 1)
+
   const stdL = (item.standardLength ?? null) as number | null
   const stdW = (item.standardWidth ?? null) as number | null
-  const stdH = (item.standardHeight ?? null) as number | null
 
-  let nx = 0
-  let nz = 0
-  let ny = 0
+  const stackLength = rawStackL
+  const stackWidth = rawStackW
+  const stackHeight = rawStackH
 
-  if (stdL && stdW && stdH && stdL > 0 && stdW > 0 && stdH > 0) {
-    nx = Math.max(1, Math.floor(stackLength / stdL))
-    nz = Math.max(1, Math.floor(stackWidth / stdW))
-    ny = Math.max(1, Math.floor(stackHeight / stdH))
-  } else {
-    nx = 3
-    nz = 2
-    ny = 2
-  }
+  const unitL = stdL && stdL > 0 ? stdL : stackLength
+  const unitW = stdW && stdW > 0 ? stdW : stackWidth
 
-  nx = Math.min(nx, 6)
-  nz = Math.min(nz, 4)
-  ny = Math.min(ny, 3)
+  const maxPerRow = Math.max(1, Math.floor(stackLength / unitL))
+  const maxPerCol = Math.max(1, Math.floor(stackWidth / unitW))
+  const perLayer = Math.max(1, maxPerRow * maxPerCol)
+  const layers = Math.max(1, Math.ceil(quantity / perLayer))
 
-  const boxLength = stackLength / nx
-  const boxWidth = stackWidth / nz
-  const boxHeight = stackHeight / ny
+  const boxLength = stackLength / maxPerRow
+  const boxWidth = stackWidth / maxPerCol
+  const boxHeight = stackHeight / layers
 
   const geometry = new THREE.BoxGeometry(boxLength, boxHeight, boxWidth)
   const material = new THREE.MeshPhongMaterial({ color, flatShading: true })
@@ -464,28 +556,29 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number) => {
   const baseY = pallet.positionY + pallet.palletHeight + (item.positionY || 0)
   const baseZ = pallet.positionZ + (item.positionZ || 0)
 
-  for (let iy = 0; iy < ny; iy++) {
-    for (let iz = 0; iz < nz; iz++) {
-      for (let ix = 0; ix < nx; ix++) {
-        const mesh = new THREE.Mesh(geometry, material)
-        mesh.position.set(
-          baseX + boxLength * (ix + 0.5),
-          baseY + boxHeight * (iy + 0.5),
-          baseZ + boxWidth * (iz + 0.5)
-        )
-        mesh.userData = { type: 'item', data: item }
-        mesh.name = `item_${item.itemId}_carton`
-        mesh.castShadow = true
+  for (let idx = 0; idx < quantity; idx++) {
+    const layer = Math.floor(idx / perLayer)
+    const posInLayer = idx % perLayer
+    const row = Math.floor(posInLayer / maxPerRow)
+    const col = posInLayer % maxPerRow
 
-        const edgeLines = new THREE.LineSegments(edgesGeometry, edgeMaterial)
-        edgeLines.position.copy(mesh.position)
-        edgeLines.userData = mesh.userData
-        edgeLines.name = `${mesh.name}_outline`
+    const mesh = new THREE.Mesh(geometry, material)
+    mesh.position.set(
+      baseX + boxLength * (col + 0.5),
+      baseY + boxHeight * (layer + 0.5),
+      baseZ + boxWidth * (row + 0.5)
+    )
+    mesh.userData = { type: 'item', data: item }
+    mesh.name = `item_${item.itemId}_carton`
+    mesh.castShadow = true
 
-        scene.add(mesh)
-        scene.add(edgeLines)
-      }
-    }
+    const edgeLines = new THREE.LineSegments(edgesGeometry, edgeMaterial)
+    edgeLines.position.copy(mesh.position)
+    edgeLines.userData = mesh.userData
+    edgeLines.name = `${mesh.name}_outline`
+
+    scene.add(mesh)
+    scene.add(edgeLines)
   }
 }
 
@@ -511,8 +604,8 @@ const onCanvasClick = (event: MouseEvent) => {
   if (!container.value) return
 
   const mode = viewMode.value
-  if (mode !== 'zones' && mode !== 'items') {
-    // Chỉ cho phép xem chi tiết khi người dùng đã chọn rõ Khu vực hoặc Hàng hóa
+  if (mode !== 'zones' && mode !== 'items' && mode !== 'pallets') {
+    // Chỉ cho phép xem chi tiết khi người dùng đã chọn rõ chế độ xem
     return
   }
 
@@ -525,7 +618,15 @@ const onCanvasClick = (event: MouseEvent) => {
 
   if (!intersects.length) return
 
-  const typePriority: string[] = mode === 'zones' ? ['zone'] : ['item']
+  let typePriority: string[] = []
+  if (mode === 'zones') {
+    typePriority = ['zone']
+  } else if (mode === 'items') {
+    typePriority = ['item']
+  } else if (mode === 'pallets') {
+    // Ưu tiên hit pallet, nhưng nếu click trúng hàng trên pallet thì vẫn xử lý được
+    typePriority = ['pallet', 'item']
+  }
 
   let targetUserData: any = null
 
@@ -551,6 +652,16 @@ const handleObjectClick = (userData: any) => {
   } else if (userData.type === 'pallet') {
     showPalletDetails(userData.data)
   } else if (userData.type === 'item') {
+    // Ở chế độ xem pallet, click vào hàng cũng xem chi tiết pallet
+    if (viewMode.value === 'pallets' && warehouseData.value) {
+      const item = userData.data
+      const pallet = warehouseData.value.pallets?.find((p) => p.palletId === item.palletId)
+      if (pallet) {
+        showPalletDetails(pallet)
+        return
+      }
+    }
+
     showItemDetails(userData.data)
   }
 }
@@ -591,11 +702,78 @@ const showPalletDetails = (pallet: any) => {
       <p><strong>Barcode:</strong> ${pallet.barcode}</p>
       <p><strong>Mã vị trí:</strong> ${pallet.locationCode || 'N/A'}</p>
       <p><strong>Vị trí:</strong> (${pallet.positionX}, ${pallet.positionY}, ${pallet.positionZ})</p>
-      <p><strong>Kích thước:</strong> ${pallet.palletLength}m × ${pallet.palletWidth}m × ${pallet.palletHeight}m</p>
-      <p><strong>Loại:</strong> ${pallet.isGround ? 'Đặt trên nền' : 'Trên kệ'}</p>
-      <p><strong>Stack level:</strong> ${pallet.stackLevel}</p>
-      <p><strong>Số hàng hóa:</strong> ${items.length} items</p>
-      ${items.length > 0 ? `<hr/><p><strong>Danh sách hàng:</strong></p><ul>${items.map((i) => `<li>${i.itemName || i.qrCode}</li>`).join('')}</ul>` : ''}
+      <p><strong>Kích thước pallet:</strong> ${pallet.palletLength}m × ${pallet.palletWidth}m × ${pallet.palletHeight}m</p>
+      ${
+        items.length > 0
+          ? `<hr/><p><strong>Danh sách hàng trên pallet:</strong></p><ul>${items
+              .map((i) => {
+                const unitSize =
+                  i.standardLength && i.standardWidth && i.standardHeight
+                    ? `${i.standardLength}m × ${i.standardWidth}m × ${i.standardHeight}m`
+                    : 'N/A'
+                const stackSize = `${i.length}m × ${i.width}m × ${i.height}m`
+                const qty = i.unitQuantity ?? null
+                const qtyText = qty != null ? (i.unit ? `${qty} ${i.unit}` : `${qty}`) : 'N/A'
+                const mfg = i.manufacturingDate || 'N/A'
+                const exp = i.expiryDate || 'N/A'
+
+                return `
+                  <li style="margin-bottom: 8px;">
+                    <strong>${i.productName || i.itemName || i.qrCode || 'Hàng hóa'}</strong>
+                    ${i.productCode ? `<div>Mã SP: ${i.productCode}</div>` : ''}
+                    ${i.customerName ? `<div>Khách hàng: ${i.customerName}</div>` : ''}
+                    <div>Kích thước thùng (1 đơn vị): ${unitSize}</div>
+                    <div>Kích thước khối hàng trên pallet: ${stackSize}</div>
+                    <div>Số lượng đơn vị trên pallet: ${qtyText}</div>
+                    ${
+                      i.weight || i.standardWeight
+                        ? `<div>Trọng lượng: ${i.weight ? `${i.weight} kg` : ''}${
+                            i.standardWeight
+                              ? `${i.weight ? ' / ' : ''}Chuẩn: ${i.standardWeight} kg`
+                              : ''
+                          }</div>`
+                        : ''
+                    }
+                    <div>Ngày sản xuất: ${mfg}</div>
+                    <div>Hạn sử dụng: ${exp}</div>
+                    ${
+                      i.productDescription
+                        ? `<div>Mô tả sản phẩm: ${i.productDescription}</div>`
+                        : ''
+                    }
+                    ${
+                      i.storageConditions ? `<div>Lưu ý bảo quản: ${i.storageConditions}</div>` : ''
+                    }
+                    ${
+                      i.unitPrice || i.totalAmount
+                        ? `<div>Giá: ${
+                            i.unitPrice != null ? `${i.unitPrice.toLocaleString()} / đơn vị` : ''
+                          }${
+                            i.totalAmount != null
+                              ? `${i.unitPrice != null ? ' – ' : ''}Thành tiền: ${i.totalAmount.toLocaleString()}`
+                              : ''
+                          }</div>`
+                        : ''
+                    }
+                    ${
+                      i.isFragile || i.isHeavy
+                        ? `<div style="margin-top:4px;">${
+                            i.isFragile
+                              ? '<span style="color:#e74c3c; font-weight:600;">⚠ Dễ vỡ</span>'
+                              : ''
+                          }${
+                            i.isHeavy
+                              ? `${i.isFragile ? ' · ' : ''}<span style="color:#8e44ad; font-weight:600;">⚠ Hàng nặng</span>`
+                              : ''
+                          }</div>`
+                        : ''
+                    }
+                  </li>
+                `
+              })
+              .join('')}</ul>`
+          : ''
+      }
     </div>
     `,
     `📦 Chi tiết Pallet`,
@@ -632,6 +810,14 @@ const showItemDetails = (item: any) => {
 
 // UI controls
 const changeViewMode = () => {
+  renderWarehouse()
+}
+
+const resetViewMode = () => {
+  viewMode.value = ''
+  filterByCustomer.value = undefined
+  filterByZone.value = undefined
+  showLabels.value = false
   renderWarehouse()
 }
 
@@ -706,28 +892,22 @@ onBeforeUnmount(() => {
         <div class="stat-item">
           <Icon icon="vi-ant-design:appstore-outlined" class="stat-icon" />
           <div>
-            <div class="stat-value">{{ stats.totalPallets }}</div>
-            <div class="stat-label">Pallets</div>
+            <div class="stat-value">{{ stats.totalRacks }}</div>
+            <div class="stat-label">Số kệ (racks)</div>
           </div>
         </div>
         <div class="stat-item">
           <Icon icon="vi-ant-design:inbox-outlined" class="stat-icon" />
           <div>
-            <div class="stat-value">{{ stats.totalItems }}</div>
-            <div class="stat-label">Hàng hóa</div>
+            <div class="stat-value">{{ stats.totalPallets }}</div>
+            <div class="stat-label">Pallets</div>
           </div>
         </div>
         <div class="stat-item highlight">
-          <Icon icon="vi-ant-design:pie-chart-outlined" class="stat-icon" />
+          <Icon icon="vi-ant-design:database-outlined" class="stat-icon" />
           <div>
-            <div class="stat-value">
-              {{
-                stats.totalPallets > 0
-                  ? ((stats.occupiedPallets / stats.totalPallets) * 100).toFixed(0)
-                  : 0
-              }}%
-            </div>
-            <div class="stat-label">Sử dụng</div>
+            <div class="stat-value">{{ stats.totalItems }}</div>
+            <div class="stat-label">Tổng hàng hóa</div>
           </div>
         </div>
       </div>
@@ -745,7 +925,12 @@ onBeforeUnmount(() => {
             <ElRadioGroup v-model="viewMode" size="small" @change="changeViewMode">
               <ElRadioButton value="zones">Khu vực</ElRadioButton>
               <ElRadioButton value="items">Hàng hóa</ElRadioButton>
+              <ElRadioButton value="pallets">Pallet</ElRadioButton>
             </ElRadioGroup>
+            <ElButton size="small" style="width: 100%; margin-top: 10px" @click="resetViewMode">
+              <Icon icon="vi-ep:refresh-left" />
+              Reset chế độ xem
+            </ElButton>
           </div>
 
           <ElDivider />
@@ -764,6 +949,24 @@ onBeforeUnmount(() => {
                 :key="customer.id"
                 :label="customer.name"
                 :value="customer.id"
+              />
+            </ElSelect>
+          </div>
+
+          <div class="control-section">
+            <h4>Lọc theo khu vực (zone)</h4>
+            <ElSelect
+              v-model="filterByZone"
+              placeholder="Tất cả khu vực"
+              size="small"
+              clearable
+              @change="applyFilter"
+            >
+              <ElOption
+                v-for="zone in zonesForFilter"
+                :key="zone.id"
+                :label="zone.name"
+                :value="zone.id"
               />
             </ElSelect>
           </div>
@@ -811,7 +1014,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="legend-item">
                 <div class="color-box" style="background: #e74c3c"></div>
-                <span>Hàng dễ vỡ</span>
+                <span>Hàng dễ vỡ / Cổng ra (marker đỏ)</span>
               </div>
               <div class="legend-item">
                 <div class="color-box" style="background: #8e44ad"></div>
@@ -823,7 +1026,7 @@ onBeforeUnmount(() => {
               </div>
               <div class="legend-item">
                 <div class="color-box" style="background: #27ae60"></div>
-                <span>Hàng thường</span>
+                <span>Hàng bao / Vị trí checkin kho (marker xanh lá)</span>
               </div>
             </div>
           </div>

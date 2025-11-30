@@ -83,9 +83,12 @@ const loadWarehouses = async () => {
 const loadInboundRequests = async () => {
   loadingInboundRequests.value = true
   try {
-    const params: { warehouseId?: number } = {}
+    const params: { warehouseId?: number; zoneId?: number } = {}
     if (selectedWarehouseId.value) {
       params.warehouseId = selectedWarehouseId.value
+    }
+    if (selectedZoneId.value) {
+      params.zoneId = selectedZoneId.value
     }
     const res = await inboundApi.getInboundRequests(params)
     if (res && (res.statusCode === 200 || res.code === 0)) {
@@ -511,7 +514,8 @@ const submitRequest = async () => {
       customPalletForm.maxWeight = 1000
       customPalletForm.maxStackHeight = 1.5
       customPalletForm.palletType = ''
-      // Có thể điều hướng tới trang danh sách yêu cầu trong tương lai
+      // Reload danh sách yêu cầu nhập kho phía dưới
+      await loadInboundRequests()
     }
   } catch (error: any) {
     ElMessage.error(error?.message || 'Lỗi khi tạo yêu cầu nhập kho')

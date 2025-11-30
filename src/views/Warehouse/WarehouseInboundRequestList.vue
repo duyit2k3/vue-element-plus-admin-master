@@ -27,6 +27,8 @@ const isWarehouseOwner = computed(() => userRole.value === 'warehouse_owner')
 
 const warehouses = ref<WarehouseListItem[]>([])
 const selectedWarehouseId = ref<number | undefined>(undefined)
+const selectedZoneId = ref<number | undefined>(undefined)
+const selectedWarehouseKey = ref<string | undefined>(undefined)
 const loadingWarehouses = ref(false)
 const inboundRequests = ref<InboundRequestListItem[]>([])
 const loadingInboundRequests = ref(false)
@@ -49,14 +51,12 @@ const loadWarehouses = async () => {
     }
     if (res && (res.statusCode === 200 || res.code === 0)) {
       warehouses.value = (res.data || []) as WarehouseListItem[]
-      if (!selectedWarehouseId.value && warehouses.value.length > 0) {
+
+      if (!selectedWarehouseKey.value && warehouses.value.length > 0) {
         const qId = route.query.warehouseId ? Number(route.query.warehouseId) : undefined
-        if (qId) {
-          const matched = warehouses.value.find((w) => w.warehouseId === qId)
-          if (matched) {
-            selectedWarehouseId.value = matched.warehouseId
-          }
-        }
+        const matched = qId ? warehouses.value.find((w) => w.warehouseId === qId) : undefined
+        const first = matched ?? warehouses.value[0]
+        selectedWarehouseKey.value = `${first.warehouseId}:${first.zoneId ?? 0}`
       }
     }
   } catch (error) {
@@ -124,9 +124,12 @@ const handleReject = async (row: InboundRequestListItem) => {
 const loadInboundRequests = async () => {
   loadingInboundRequests.value = true
   try {
-    const params: { warehouseId?: number } = {}
+    const params: { warehouseId?: number; zoneId?: number } = {}
     if (selectedWarehouseId.value) {
       params.warehouseId = selectedWarehouseId.value
+    }
+    if (selectedZoneId.value) {
+      params.zoneId = selectedZoneId.value
     }
     const res = await inboundApi.getInboundRequests(params)
     if (res && (res.statusCode === 200 || res.code === 0)) {
@@ -139,9 +142,25 @@ const loadInboundRequests = async () => {
   }
 }
 
+const syncSelectedWarehouse = () => {
+  if (!selectedWarehouseKey.value) {
+    selectedWarehouseId.value = undefined
+    selectedZoneId.value = undefined
+    return
+  }
+
+  const [widStr, zidStr] = selectedWarehouseKey.value.split(':')
+  const wid = Number(widStr)
+  const zid = Number(zidStr)
+
+  selectedWarehouseId.value = Number.isFinite(wid) ? wid : undefined
+  selectedZoneId.value = Number.isFinite(zid) && zid > 0 ? zid : undefined
+}
+
 watch(
-  () => selectedWarehouseId.value,
+  () => selectedWarehouseKey.value,
   () => {
+    syncSelectedWarehouse()
     loadInboundRequests()
   }
 )
@@ -163,7 +182,7 @@ onMounted(() => {
       <ElForm label-width="140px">
         <ElFormItem label="Kho">
           <ElSelect
-            v-model="selectedWarehouseId"
+            v-model="selectedWarehouseKey"
             placeholder="Chọn kho đã thuê"
             :loading="loadingWarehouses"
             filterable
@@ -171,13 +190,13 @@ onMounted(() => {
           >
             <ElOption
               v-for="w in warehouses"
-              :key="w.warehouseId"
+              :key="w.zoneId ?? w.warehouseId"
               :label="
                 w.zoneName
                   ? `${w.warehouseName || `Kho #${w.warehouseId}`} - ${w.zoneName}`
                   : w.warehouseName || `Kho #${w.warehouseId}`
               "
-              :value="w.warehouseId"
+              :value="`${w.warehouseId}:${w.zoneId ?? 0}`"
             />
           </ElSelect>
         </ElFormItem>
