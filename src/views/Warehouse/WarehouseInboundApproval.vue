@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue'
 import {
   ElCard,
   ElRow,
@@ -18,7 +18,10 @@ import inboundApi, {
   type InboundApprovalView,
   type InboundApprovalItem,
   type PreferredPalletLayout,
-  type InboundOptimizeLayoutView
+  type InboundOptimizeLayoutView,
+  type ManualStackLayoutRequest,
+  type ManualStackLayoutItemRequest,
+  type ManualStackUnitRequest
 } from '@/api/inbound'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
@@ -40,6 +43,9 @@ const palletLayouts = ref<Record<number, number>>({})
 const optimizeResult = ref<InboundOptimizeLayoutView | null>(null)
 const lastPreferredLayouts = ref<PreferredPalletLayout[] | null>(null)
 
+const manualLayouts = ref<Record<number, ManualStackUnitRequest[]>>({})
+const manualLayerConfirmed = ref<Record<number, boolean>>({})
+
 let scene: THREE.Scene | null = null
 let camera: THREE.PerspectiveCamera | null = null
 let renderer: THREE.WebGLRenderer | null = null
@@ -48,7 +54,80 @@ let animationId: number | null = null
 let dragControls: DragControls | null = null
 let palletGroup: THREE.Group | null = null
 
+// Các mesh có thể kéo (hiện tại chỉ dùng cho drag pallet ở auto mode nếu cần)
+let draggableUnits: THREE.Object3D[] = []
+
+// Trạng thái "đang đặt hàng" cho manual mode
+let placingObject: THREE.Object3D | null = null
+let placingItemId: number | null = null
+let placingUnitIndex: number | null = null
+const mouse = new THREE.Vector2()
+const raycaster = new THREE.Raycaster()
+let pointerListenersAttached = false
+
 const receiptId = ref<number | null>(null)
+
+const isManualMode = computed(() => approvalData.value?.stackMode?.toLowerCase() === 'manual')
+
+const currentBlockDims = computed(() => {
+  const item = selectedItem.value
+  if (!item) {
+    return { length: 0, width: 0, height: 0 }
+  }
+
+  if (isManualMode.value) {
+    const units = manualLayouts.value[item.inboundItemId] || []
+    if (units.length) {
+      let minX = Number.POSITIVE_INFINITY
+      let maxX = Number.NEGATIVE_INFINITY
+      let minZ = Number.POSITIVE_INFINITY
+      let maxZ = Number.NEGATIVE_INFINITY
+      let maxTop = Number.NEGATIVE_INFINITY
+
+      const palletHeight = item.palletHeight
+
+      for (const u of units) {
+        const halfL = u.length / 2
+        const halfW = u.width / 2
+
+        const minUx = u.localX - halfL
+        const maxUx = u.localX + halfL
+        const minUz = u.localZ - halfW
+        const maxUz = u.localZ + halfW
+
+        if (minUx < minX) minX = minUx
+        if (maxUx > maxX) maxX = maxUx
+        if (minUz < minZ) minZ = minUz
+        if (maxUz > maxZ) maxZ = maxUz
+
+        const top = u.localY + u.height / 2
+        if (top > maxTop) maxTop = top
+      }
+
+      let length = maxX - minX
+      let width = maxZ - minZ
+      let height = maxTop - palletHeight
+
+      if (!Number.isFinite(length) || length <= 0) length = item.itemLength
+      if (!Number.isFinite(width) || width <= 0) width = item.itemWidth
+      if (!Number.isFinite(height) || height <= 0) height = item.itemHeight
+
+      return { length, width, height }
+    }
+  }
+
+  return {
+    length: item.itemLength,
+    width: item.itemWidth,
+    height: item.itemHeight
+  }
+})
+
+const stackModeLabel = computed(() => {
+  const mode = approvalData.value?.stackMode?.toLowerCase()
+  if (mode === 'manual') return 'Bạn tự xếp trên pallet'
+  return 'Hệ thống gợi ý cách xếp'
+})
 
 const loadApprovalData = async () => {
   const idParam = route.params.receiptId || route.query.receiptId
@@ -115,10 +194,19 @@ const initThree = () => {
 
   const grid = new THREE.GridHelper(5, 20, 0x888888, 0xcccccc)
   scene.add(grid)
+
+  // Gắn listener chuột cho canvas (để điều khiển chế độ đặt hàng theo chuột)
+  if (canvasContainer.value && !pointerListenersAttached) {
+    canvasContainer.value.addEventListener('pointermove', handlePointerMove)
+    canvasContainer.value.addEventListener('click', handlePointerClick)
+    pointerListenersAttached = true
+  }
 }
 
 const renderScene = () => {
   if (!scene || !camera || !renderer) return
+
+  const item = selectedItem.value
 
   // clear old objects except lights & helpers
   const toRemove: THREE.Object3D[] = []
@@ -128,14 +216,18 @@ const renderScene = () => {
   })
   toRemove.forEach((obj) => scene!.remove(obj))
 
-  const item = selectedItem.value
   if (!item) {
     animate()
     return
   }
 
-  // Nhóm pallet + hàng để kéo thả cùng nhau
+  // Khi render lại thì hủy trạng thái đang đặt hàng (nếu có)
+  placingObject = null
+  placingItemId = null
+  placingUnitIndex = null
+
   palletGroup = new THREE.Group()
+  draggableUnits = []
 
   // pallet
   const palletGeo = new THREE.BoxGeometry(item.palletLength, item.palletHeight, item.palletWidth)
@@ -146,95 +238,154 @@ const renderScene = () => {
   palletMesh.castShadow = true
   palletGroup.add(palletMesh)
 
-  if (item.isBag) {
-    const unitL = item.unitLength || item.itemLength
-    const unitW = item.unitWidth || item.itemWidth
-    const unitH = item.unitHeight || item.itemHeight / 2
+  let units: ManualStackUnitRequest[] = []
 
-    const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
-    const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
-    const perLayer = Math.max(1, maxPerRow * maxPerCol)
+  if (isManualMode.value) {
+    // Manual mode: không tự sinh layout, pallet ban đầu rỗng,
+    // chỉ vẽ các đơn vị mà người dùng đã thêm
+    units = manualLayouts.value[item.inboundItemId] || []
+  } else {
+    // Auto mode: sinh layout mặc định để hiển thị
+    let existing = manualLayouts.value[item.inboundItemId]
     const total = Math.max(1, item.quantity)
 
-    const bagGeo = new THREE.BoxGeometry(unitL, unitH, unitW)
+    if (!existing || existing.length !== total) {
+      const generated: ManualStackUnitRequest[] = []
+
+      if (item.isBag) {
+        const unitL = item.unitLength || item.itemLength
+        const unitW = item.unitWidth || item.itemWidth
+        const unitH = item.unitHeight || item.itemHeight / 2
+
+        const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
+        const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
+        const perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+        for (let idx = 0; idx < total; idx++) {
+          const layer = Math.floor(idx / perLayer)
+          const posInLayer = idx % perLayer
+          const row = Math.floor(posInLayer / maxPerRow)
+          const col = posInLayer % maxPerRow
+
+          const xStart = -item.palletLength / 2 + unitL / 2
+          const zStart = -item.palletWidth / 2 + unitW / 2
+
+          const x = xStart + col * unitL
+          const z = zStart + row * unitW
+          const y = item.palletHeight + unitH / 2 + layer * unitH
+
+          generated.push({
+            unitIndex: idx,
+            localX: x,
+            localY: y,
+            localZ: z,
+            length: unitL,
+            width: unitW,
+            height: unitH,
+            rotationY: 0
+          })
+        }
+      } else {
+        const unitL = item.unitLength || item.itemLength
+        const unitW = item.unitWidth || item.itemWidth
+        const unitH = item.unitHeight || item.itemHeight
+
+        const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
+        const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
+        const perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+        for (let idx = 0; idx < total; idx++) {
+          const layer = Math.floor(idx / perLayer)
+          const posInLayer = idx % perLayer
+          const row = Math.floor(posInLayer / maxPerRow)
+          const col = posInLayer % maxPerRow
+
+          const xStart = -item.palletLength / 2 + unitL / 2
+          const zStart = -item.palletWidth / 2 + unitW / 2
+
+          const x = xStart + col * unitL
+          const z = zStart + row * unitW
+          const y = item.palletHeight + unitH / 2 + layer * unitH
+
+          generated.push({
+            unitIndex: idx,
+            localX: x,
+            localY: y,
+            localZ: z,
+            length: unitL,
+            width: unitW,
+            height: unitH,
+            rotationY: 0
+          })
+        }
+      }
+
+      existing = generated
+      manualLayouts.value[item.inboundItemId] = generated
+    }
+
+    units = existing
+  }
+
+  if (item.isBag) {
     const bagMat = new THREE.MeshStandardMaterial({ color: 0x27ae60 })
-    const bagEdgeGeo = new THREE.EdgesGeometry(bagGeo)
-    const bagEdgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
 
-    for (let idx = 0; idx < total; idx++) {
-      const layer = Math.floor(idx / perLayer)
-      const posInLayer = idx % perLayer
-      const row = Math.floor(posInLayer / maxPerRow)
-      const col = posInLayer % maxPerRow
-
-      const xStart = -item.palletLength / 2 + unitL / 2
-      const zStart = -item.palletWidth / 2 + unitW / 2
-
-      const x = xStart + col * unitL
-      const z = zStart + row * unitW
-      const y = item.palletHeight + unitH / 2 + layer * unitH
-
+    for (const u of units) {
+      const bagGeo = new THREE.BoxGeometry(u.length, u.height, u.width)
       const bag = new THREE.Mesh(bagGeo, bagMat)
-      bag.position.set(x, y, z)
-      bag.castShadow = true
-      bag.receiveShadow = true
-      palletGroup.add(bag)
 
+      const group = new THREE.Group()
+      group.add(bag)
+
+      const bagEdgeGeo = new THREE.EdgesGeometry(bagGeo)
+      const bagEdgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
       const bagEdges = new THREE.LineSegments(bagEdgeGeo, bagEdgeMat)
-      bagEdges.position.copy(bag.position)
-      palletGroup.add(bagEdges)
+      group.add(bagEdges)
+
+      group.position.set(u.localX, u.localY, u.localZ)
+      group.userData = {
+        inboundItemId: item.inboundItemId,
+        unitIndex: u.unitIndex
+      }
+
+      palletGroup.add(group)
+      draggableUnits.push(group)
     }
   } else {
-    const unitL = item.unitLength || item.itemLength
-    const unitW = item.unitWidth || item.itemWidth
-    const unitH = item.unitHeight || item.itemHeight
-
-    const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
-    const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
-    const perLayer = Math.max(1, maxPerRow * maxPerCol)
-    const total = Math.max(1, item.quantity)
-
-    const boxGeo = new THREE.BoxGeometry(unitL, unitH, unitW)
     const boxMat = new THREE.MeshStandardMaterial({
       color: 0xe67e22,
       opacity: 0.95,
       transparent: true
     })
-    const boxEdgeGeo = new THREE.EdgesGeometry(boxGeo)
-    const boxEdgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
 
-    for (let idx = 0; idx < total; idx++) {
-      const layer = Math.floor(idx / perLayer)
-      const posInLayer = idx % perLayer
-      const row = Math.floor(posInLayer / maxPerRow)
-      const col = posInLayer % maxPerRow
-
-      const xStart = -item.palletLength / 2 + unitL / 2
-      const zStart = -item.palletWidth / 2 + unitW / 2
-
-      const x = xStart + col * unitL
-      const z = zStart + row * unitW
-      const y = item.palletHeight + unitH / 2 + layer * unitH
-
+    for (const u of units) {
+      const boxGeo = new THREE.BoxGeometry(u.length, u.height, u.width)
       const box = new THREE.Mesh(boxGeo, boxMat)
-      box.position.set(x, y, z)
-      box.castShadow = true
-      box.receiveShadow = true
-      palletGroup.add(box)
 
+      const group = new THREE.Group()
+      group.add(box)
+
+      const boxEdgeGeo = new THREE.EdgesGeometry(boxGeo)
+      const boxEdgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
       const boxEdges = new THREE.LineSegments(boxEdgeGeo, boxEdgeMat)
-      boxEdges.position.copy(box.position)
-      palletGroup.add(boxEdges)
+      group.add(boxEdges)
+
+      group.position.set(u.localX, u.localY, u.localZ)
+      group.userData = {
+        inboundItemId: item.inboundItemId,
+        unitIndex: u.unitIndex
+      }
+
+      palletGroup.add(group)
+      draggableUnits.push(group)
     }
   }
 
-  // Khôi phục vị trí đã kéo trước đó (nếu có)
+  // Khôi phục vị trí pallet đã kéo trước đó (ưu tiên cho auto layout)
   const savedX = palletLayouts.value[item.palletId]
   palletGroup.position.set(savedX ?? 0, 0, 0)
 
   scene.add(palletGroup)
-
-  setupDragControls()
 
   if (controls) {
     controls.target.set(0, item.palletHeight, 0)
@@ -244,6 +395,268 @@ const renderScene = () => {
   animate()
 }
 
+// Bắt đầu chế độ "đặt hàng theo chuột" cho unit vừa thêm
+const startPlacingUnit = (inboundItemId: number, unitIndex: number) => {
+  if (!palletGroup) return
+
+  let target: THREE.Object3D | null = null
+  palletGroup.traverse((obj) => {
+    if (target) return
+    if (
+      obj.userData &&
+      obj.userData.inboundItemId === inboundItemId &&
+      obj.userData.unitIndex === unitIndex
+    ) {
+      target = obj
+    }
+  })
+
+  if (target) {
+    placingObject = target
+    placingItemId = inboundItemId
+    placingUnitIndex = unitIndex
+  }
+}
+
+const buildManualLayoutRequest = (): ManualStackLayoutRequest | null => {
+  if (!approvalData.value) return null
+
+  const itemsReq: ManualStackLayoutItemRequest[] = []
+
+  for (const item of approvalData.value.items) {
+    let units = manualLayouts.value[item.inboundItemId]
+    const total = Math.max(1, item.quantity)
+
+    if (!units || units.length !== total) {
+      // Nếu vì lý do nào đó chưa có layout trong bộ nhớ, tạo default giống renderScene
+      const generated: ManualStackUnitRequest[] = []
+
+      if (item.isBag) {
+        const unitL = item.unitLength || item.itemLength
+        const unitW = item.unitWidth || item.itemWidth
+        const unitH = item.unitHeight || item.itemHeight / 2
+
+        const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
+        const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
+        const perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+        for (let idx = 0; idx < total; idx++) {
+          const layer = Math.floor(idx / perLayer)
+          const posInLayer = idx % perLayer
+          const row = Math.floor(posInLayer / maxPerRow)
+          const col = posInLayer % maxPerRow
+
+          const xStart = -item.palletLength / 2 + unitL / 2
+          const zStart = -item.palletWidth / 2 + unitW / 2
+
+          const x = xStart + col * unitL
+          const z = zStart + row * unitW
+          const y = item.palletHeight + unitH / 2 + layer * unitH
+
+          generated.push({
+            unitIndex: idx,
+            localX: x,
+            localY: y,
+            localZ: z,
+            length: unitL,
+            width: unitW,
+            height: unitH,
+            rotationY: 0
+          })
+        }
+      } else {
+        const unitL = item.unitLength || item.itemLength
+        const unitW = item.unitWidth || item.itemWidth
+        const unitH = item.unitHeight || item.itemHeight
+
+        const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
+        const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
+        const perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+        for (let idx = 0; idx < total; idx++) {
+          const layer = Math.floor(idx / perLayer)
+          const posInLayer = idx % perLayer
+          const row = Math.floor(posInLayer / maxPerRow)
+          const col = posInLayer % maxPerRow
+
+          const xStart = -item.palletLength / 2 + unitL / 2
+          const zStart = -item.palletWidth / 2 + unitW / 2
+
+          const x = xStart + col * unitL
+          const z = zStart + row * unitW
+          const y = item.palletHeight + unitH / 2 + layer * unitH
+
+          generated.push({
+            unitIndex: idx,
+            localX: x,
+            localY: y,
+            localZ: z,
+            length: unitL,
+            width: unitW,
+            height: unitH,
+            rotationY: 0
+          })
+        }
+      }
+
+      units = generated
+      manualLayouts.value[item.inboundItemId] = generated
+    }
+
+    itemsReq.push({ inboundItemId: item.inboundItemId, units })
+  }
+
+  return { items: itemsReq }
+}
+
+const resetCurrentItemLayout = () => {
+  if (!isManualMode.value) return
+  const item = selectedItem.value
+  if (!item) return
+
+  // Đưa pallet về trạng thái rỗng cho item hiện tại
+  manualLayouts.value[item.inboundItemId] = []
+  manualLayerConfirmed.value[item.inboundItemId] = false
+  renderScene()
+}
+
+const addUnitForCurrentItem = () => {
+  const item = selectedItem.value
+  if (!item) return
+
+  if (!isManualMode.value) return
+
+  if (placingObject) {
+    ElMessage.warning('Đang đặt một đơn vị hàng. Vui lòng click lên pallet để đặt xong trước.')
+    return
+  }
+
+  const total = Math.max(1, item.quantity)
+  let units = manualLayouts.value[item.inboundItemId] || []
+
+  // Nếu tầng đã được xác nhận thì không cho thêm, yêu cầu reset trước
+  if (manualLayerConfirmed.value[item.inboundItemId]) {
+    ElMessage.warning('Tầng đã được xác nhận. Vui lòng Reset layout nếu muốn thiết kế lại.')
+    return
+  }
+
+  if (units.length >= total) {
+    ElMessage.warning('Đã đủ số lượng thùng/bao theo phiếu, không thể thêm thêm.')
+    return
+  }
+
+  if (item.isBag) {
+    const unitL = item.unitLength || item.itemLength
+    const unitW = item.unitWidth || item.itemWidth
+    const unitH = item.unitHeight || item.itemHeight / 2
+
+    const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
+    const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
+    const perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+    if (units.length >= perLayer) {
+      ElMessage.warning('Pallet không còn chỗ trống trên tầng này để thêm hàng.')
+      return
+    }
+
+    const y = item.palletHeight + unitH / 2 // tầng 1
+
+    units = [
+      ...units,
+      {
+        unitIndex: units.length,
+        localX: 0,
+        localY: y,
+        localZ: 0,
+        length: unitL,
+        width: unitW,
+        height: unitH,
+        rotationY: 0
+      }
+    ]
+  } else {
+    const unitL = item.unitLength || item.itemLength
+    const unitW = item.unitWidth || item.itemWidth
+    const unitH = item.unitHeight || item.itemHeight
+
+    const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
+    const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
+    const perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+    if (units.length >= perLayer) {
+      ElMessage.warning('Pallet không còn chỗ trống trên tầng này để thêm hàng.')
+      return
+    }
+
+    const y = item.palletHeight + unitH / 2
+
+    units = [
+      ...units,
+      {
+        unitIndex: units.length,
+        localX: 0,
+        localY: y,
+        localZ: 0,
+        length: unitL,
+        width: unitW,
+        height: unitH,
+        rotationY: 0
+      }
+    ]
+  }
+
+  manualLayouts.value[item.inboundItemId] = units
+  // Sau khi thêm unit mới, render lại và bật chế độ đặt hàng theo chuột cho unit đó
+  renderScene()
+  const latest = units[units.length - 1]
+  startPlacingUnit(item.inboundItemId, latest.unitIndex)
+}
+
+const confirmCurrentLayer = () => {
+  if (!isManualMode.value) return
+  const item = selectedItem.value
+  if (!item) return
+
+  const itemId = item.inboundItemId
+
+  if (manualLayerConfirmed.value[itemId]) {
+    ElMessage.warning('Tầng này đã được xác nhận. Vui lòng Reset layout nếu muốn thiết kế lại.')
+    return
+  }
+
+  const baseUnits = manualLayouts.value[itemId] || []
+  if (!baseUnits.length) {
+    ElMessage.warning('Chưa có hàng nào trên pallet để xác nhận tầng.')
+    return
+  }
+
+  const total = Math.max(1, item.quantity)
+  const baseCount = baseUnits.length
+  const newUnits: ManualStackUnitRequest[] = []
+
+  // Giả định chiều cao mỗi đơn vị bằng nhau, lấy từ đơn vị đầu tiên
+  const layerHeight = baseUnits[0].height
+  let currentIndex = 0
+
+  outer: for (let layer = 0; ; layer++) {
+    for (let i = 0; i < baseCount; i++) {
+      if (currentIndex >= total) break outer
+      const base = baseUnits[i]
+      newUnits.push({
+        ...base,
+        unitIndex: currentIndex,
+        localY: base.localY + layer * layerHeight
+      })
+      currentIndex++
+    }
+  }
+
+  manualLayouts.value[itemId] = newUnits
+  manualLayerConfirmed.value[itemId] = true
+  renderScene()
+  ElMessage.success('Đã xác nhận tầng 1, hệ thống đã nhân layout cho các tầng tiếp theo.')
+}
+
 const animate = () => {
   if (!renderer || !scene || !camera) return
   animationId = requestAnimationFrame(animate)
@@ -251,36 +664,89 @@ const animate = () => {
   renderer.render(scene, camera)
 }
 
-const setupDragControls = () => {
-  if (!scene || !camera || !renderer || !palletGroup) return
+// Cập nhật vị trí unit đang được "dẫn" theo chuột trên mặt pallet
+// và không cho phép đè lên các unit đã đặt trước đó
+const updatePlacingObjectPosition = (event: PointerEvent) => {
+  if (!placingObject || !camera || !renderer || !selectedItem.value) return
+  if (!isManualMode.value || placingItemId == null || placingUnitIndex == null) return
 
-  if (dragControls) {
-    dragControls.dispose()
-    dragControls = null
+  const item = selectedItem.value
+  if (!item || item.inboundItemId !== placingItemId) return
+
+  const rect = renderer.domElement.getBoundingClientRect()
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+
+  raycaster.setFromCamera(mouse, camera)
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -item.palletHeight)
+  const point = new THREE.Vector3()
+
+  if (!raycaster.ray.intersectPlane(plane, point)) return
+
+  const units = manualLayouts.value[placingItemId] || []
+  const u = units.find((x) => x.unitIndex === placingUnitIndex)
+  if (!u) return
+
+  const halfPalL = item.palletLength / 2
+  const halfPalW = item.palletWidth / 2
+  const halfL = u.length / 2
+  const halfW = u.width / 2
+
+  // Tọa độ đề xuất sau khi clamp trong phạm vi pallet
+  const proposedX = THREE.MathUtils.clamp(point.x, -halfPalL + halfL, halfPalL - halfL)
+  const proposedZ = THREE.MathUtils.clamp(point.z, -halfPalW + halfW, halfPalW - halfW)
+  const y = item.palletHeight + u.height / 2
+
+  // Kiểm tra va chạm AABB 2D (X,Z) với các unit đã đặt trước đó
+  const minX1 = proposedX - halfL
+  const maxX1 = proposedX + halfL
+  const minZ1 = proposedZ - halfW
+  const maxZ1 = proposedZ + halfW
+
+  const willOverlap = units.some((other) => {
+    if (other.unitIndex === placingUnitIndex) return false
+
+    const halfL2 = other.length / 2
+    const halfW2 = other.width / 2
+    const minX2 = other.localX - halfL2
+    const maxX2 = other.localX + halfL2
+    const minZ2 = other.localZ - halfW2
+    const maxZ2 = other.localZ + halfW2
+
+    // Không giao nhau nếu một trong bốn điều kiện sau đúng
+    if (maxX1 <= minX2 || minX1 >= maxX2 || maxZ1 <= minZ2 || minZ1 >= maxZ2) {
+      return false
+    }
+    return true
+  })
+
+  if (willOverlap) {
+    // Nếu có va chạm, giữ nguyên vị trí hiện tại của unit đang đặt
+    return
   }
 
-  const objects: THREE.Object3D[] = [palletGroup]
-  dragControls = new DragControls(objects, camera, renderer.domElement)
+  placingObject.position.set(proposedX, y, proposedZ)
 
-  dragControls.addEventListener('dragstart', () => {
-    if (controls) controls.enabled = false
-  })
-
-  dragControls.addEventListener('drag', (event: any) => {
-    const obj = event.object as THREE.Object3D
-    // Giữ pallet trên mặt phẳng ground
-    obj.position.y = 0
-    obj.position.z = 0
-  })
-
-  dragControls.addEventListener('dragend', () => {
-    if (controls) controls.enabled = true
-    // Lưu lại priority theo vị trí X hiện tại của pallet
-    if (selectedItem.value && palletGroup) {
-      palletLayouts.value[selectedItem.value.palletId] = palletGroup.position.x
-    }
-  })
+  u.localX = proposedX
+  u.localY = y
+  u.localZ = proposedZ
 }
+
+const handlePointerMove = (event: PointerEvent) => {
+  updatePlacingObjectPosition(event)
+}
+
+const handlePointerClick = (event: PointerEvent) => {
+  if (!placingObject) return
+  // Cập nhật vị trí lần cuối rồi thoát chế độ đặt hàng
+  updatePlacingObjectPosition(event)
+  placingObject = null
+  placingItemId = null
+  placingUnitIndex = null
+}
+
+// setupDragControls is no longer used - manual mode uses mouse-based placement,
+// auto mode only allows view rotation/zoom via OrbitControls
 
 watch(selectedItem, () => {
   renderScene()
@@ -296,6 +762,11 @@ onBeforeUnmount(() => {
   if (dragControls) {
     dragControls.dispose()
     dragControls = null
+  }
+  if (canvasContainer.value && pointerListenersAttached) {
+    canvasContainer.value.removeEventListener('pointermove', handlePointerMove)
+    canvasContainer.value.removeEventListener('click', handlePointerClick)
+    pointerListenersAttached = false
   }
   if (renderer) {
     if (animationId !== null) {
@@ -353,6 +824,21 @@ const handleApprove = async () => {
   if (!receiptId.value || !approvalData.value) return
   approving.value = true
   try {
+    // Nếu ở chế độ tự xếp, lưu layout chi tiết trước khi duyệt
+    if (isManualMode.value) {
+      const layoutReq = buildManualLayoutRequest()
+      if (!layoutReq) {
+        ElMessage.error('Không thể xây dựng layout xếp hàng thủ công')
+        return
+      }
+
+      const saveRes = await inboundApi.saveManualStackLayout(receiptId.value, layoutReq)
+      if (!(saveRes.statusCode === 200 || saveRes.code === 0)) {
+        ElMessage.error(saveRes.message || 'Không thể lưu layout xếp hàng thủ công')
+        return
+      }
+    }
+
     // Nếu đã có layout tối ưu gần nhất thì ưu tiên dùng, ngược lại lấy từ vị trí kéo thả hiện tại
     let layouts: PreferredPalletLayout[] = []
 
@@ -457,6 +943,10 @@ const handleBack = () => {
             Khách hàng:
             <strong>{{ approvalData.customerName || `#${approvalData.customerId}` }}</strong>
           </span>
+          <span>
+            Cách xếp hàng:
+            <strong>{{ stackModeLabel }}</strong>
+          </span>
         </div>
       </ElCol>
       <ElCol :span="12">
@@ -526,8 +1016,16 @@ const handleBack = () => {
               <span class="card-title">Viewer 3D Pallet &amp; Hàng</span>
             </div>
           </template>
-
-          <div ref="canvasContainer" class="canvas-container" v-loading="loading"></div>
+          <div class="canvas-wrapper">
+            <div ref="canvasContainer" class="canvas-container" v-loading="loading"></div>
+            <div v-if="isManualMode" class="manual-tools-overlay">
+              <ElButton size="small" @click="addUnitForCurrentItem">Thêm hàng</ElButton>
+              <ElButton size="small" @click="resetCurrentItemLayout">Reset layout pallet</ElButton>
+              <ElButton size="small" type="primary" @click="confirmCurrentLayer">
+                Xác nhận tầng
+              </ElButton>
+            </div>
+          </div>
         </ElCard>
       </ElCol>
 
@@ -573,8 +1071,8 @@ const handleBack = () => {
             </p>
             <p>
               <strong>Kích thước khối hàng trên pallet (L×W×H):</strong>
-              {{ selectedItem.itemLength }} × {{ selectedItem.itemWidth }} ×
-              {{ selectedItem.itemHeight }} m
+              {{ currentBlockDims.length }} × {{ currentBlockDims.width }} ×
+              {{ currentBlockDims.height }} m
             </p>
             <p v-if="selectedItem.unitLength && selectedItem.unitWidth && selectedItem.unitHeight">
               <strong>Kích thước 1 đơn vị (L×W×H):</strong>
@@ -587,6 +1085,17 @@ const handleBack = () => {
             </p>
 
             <ElDivider />
+
+            <div v-if="isManualMode" class="manual-tools">
+              <div class="manual-tools__hint">
+                Chế độ <strong>tự xếp trên pallet</strong>: dùng các nút ở góc dưới bên trái viewer
+                3D để thêm hàng, reset và xác nhận tầng, sau đó kéo thả từng bao/thùng trên pallet.
+              </div>
+            </div>
+            <div v-else class="manual-tools__hint auto-mode-hint">
+              Phiếu này đang dùng <strong>cách xếp do hệ thống gợi ý</strong>. Bạn có thể nhấn
+              <strong>"Tối ưu tự động"</strong> ở phía trên để hệ thống gợi ý zone/kệ cho pallet.
+            </div>
 
             <div>
               <strong>Layout đề xuất (nếu có):</strong>
@@ -679,9 +1188,25 @@ const handleBack = () => {
   font-weight: 600;
 }
 
+.canvas-wrapper {
+  position: relative;
+}
+
 .canvas-container {
   width: 100%;
   height: 520px;
+}
+
+.manual-tools-overlay {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  display: flex;
+  padding: 6px 10px;
+  background: rgb(17 24 39 / 80%);
+  border-radius: 6px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .full-height {
@@ -700,6 +1225,16 @@ const handleBack = () => {
   p {
     margin: 4px 0;
   }
+}
+
+.manual-tools__hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
+}
+
+.auto-mode-hint {
+  margin-top: 8px;
 }
 
 .detail-empty {

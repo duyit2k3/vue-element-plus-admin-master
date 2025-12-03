@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted, watch, computed } from 'vue'
+import { ref, reactive, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 import {
   ElCard,
   ElRow,
@@ -16,7 +16,10 @@ import {
   ElTable,
   ElTableColumn,
   ElButton,
-  ElMessage
+  ElMessage,
+  ElRadioGroup,
+  ElRadioButton,
+  ElDialog
 } from 'element-plus'
 import { Icon } from '@/components/Icon'
 import warehouseApi, { type WarehouseListItem, type WarehouseZone } from '@/api/warehouse'
@@ -27,6 +30,8 @@ import palletApi, {
   type CreatePalletFromTemplateRequest
 } from '@/api/pallet'
 import productApi, { type ProductViewModel, type CreateProductRequest } from '@/api/product'
+import * as THREE from 'three'
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
 import inboundApi, {
   type InboundItemRequest,
   type CreateInboundRequestRequest,
@@ -338,6 +343,39 @@ type InboundItemWithDimensions = InboundItemRequest & {
 
 const items = ref<InboundItemWithDimensions[]>([])
 
+const stackMode = ref<'auto' | 'manual'>('auto')
+
+type AutoStackTemplate = {
+  id: string
+  title: string
+  subtitle: string
+  description: string
+}
+
+const autoStackTemplates: AutoStackTemplate[] = [
+  {
+    id: 'straight',
+    title: 'Mẫu gợi ý 1',
+    subtitle: 'Cách xếp hệ thống đề xuất',
+    description: 'Bố trí tự động phù hợp cho phần lớn hàng hóa.'
+  },
+  {
+    id: 'brick',
+    title: 'Mẫu gợi ý 2',
+    subtitle: 'Biến thể tăng ổn định',
+    description:
+      'Một biến thể bố trí giúp tăng độ ổn định cho pallet khi xếp cao, phù hợp nhiều loại hàng.'
+  },
+  {
+    id: 'cross',
+    title: 'Mẫu gợi ý 3',
+    subtitle: 'Biến thể khác',
+    description: 'Một bố trí khác giúp tận dụng diện tích pallet trong một số trường hợp đặc thù.'
+  }
+]
+const showAutoLayoutDialog = ref(false)
+const selectedAutoLayoutId = ref<string | null>(autoStackTemplates[0]?.id ?? null)
+
 const itemForm = reactive<{
   palletId: number | undefined
   quantity: number
@@ -395,6 +433,245 @@ watch(
   }
 )
 
+type AutoPreviewContext = {
+  scene: THREE.Scene
+  camera: THREE.PerspectiveCamera
+  renderer: THREE.WebGLRenderer
+  controls: OrbitControls
+}
+
+type BlockDims = {
+  length: number
+  width: number
+  height: number
+}
+
+const autoPreviewContainers = ref<Record<string, HTMLDivElement | null>>({})
+const autoPreviewContexts: Record<string, AutoPreviewContext | undefined> = {}
+const autoPreviewBlockDims = ref<Record<string, BlockDims>>({})
+let autoPreviewAnimationId: number | null = null
+
+const setAutoPreviewContainer = (id: string, el: unknown) => {
+  autoPreviewContainers.value[id] = (
+    el instanceof HTMLDivElement ? el : null
+  ) as HTMLDivElement | null
+}
+
+const initAutoPreviewScenes = () => {
+  const previewItem = items.value[0]
+  if (!previewItem) return
+
+  const pallet = createdPallets.value.find((p) => p.palletId === previewItem.palletId)
+  const product = products.value.find((p) => p.productId === previewItem.productId)
+  if (!pallet || !product) return
+
+  const itemType = getProductItemType(product)
+  const isBag = itemType === 'bag'
+
+  const palletLength = pallet.length
+  const palletWidth = pallet.width
+  const palletHeight = pallet.height
+  const qty = Math.max(1, previewItem.quantity)
+
+  autoPreviewBlockDims.value = {}
+
+  autoStackTemplates.forEach((tpl) => {
+    const container = autoPreviewContainers.value[tpl.id]
+    if (!container) return
+
+    const width = container.clientWidth || 260
+    const height = container.clientHeight || 200
+
+    const existing = autoPreviewContexts[tpl.id]
+    if (existing) {
+      existing.renderer.dispose()
+      container.innerHTML = ''
+    }
+
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color(0xf0f0f0)
+
+    const camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 1000)
+    camera.position.set(2, 2, 2)
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true })
+    renderer.setSize(width, height)
+    container.appendChild(renderer.domElement)
+
+    const controls = new OrbitControls(camera, renderer.domElement)
+    controls.enableDamping = true
+    controls.dampingFactor = 0.05
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.7)
+    scene.add(ambient)
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8)
+    dir.position.set(5, 10, 5)
+    scene.add(dir)
+
+    const grid = new THREE.GridHelper(5, 20, 0x888888, 0xcccccc)
+    scene.add(grid)
+
+    const palletGeo = new THREE.BoxGeometry(palletLength, palletHeight, palletWidth)
+    const palletMat = new THREE.MeshStandardMaterial({ color: 0xf39c12 })
+    const palletMesh = new THREE.Mesh(palletGeo, palletMat)
+    palletMesh.position.set(0, palletHeight / 2, 0)
+    palletMesh.receiveShadow = true
+    palletMesh.castShadow = true
+    scene.add(palletMesh)
+
+    // Viền pallet
+    const palletEdgeGeo = new THREE.EdgesGeometry(palletGeo)
+    const palletEdgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
+    const palletEdges = new THREE.LineSegments(palletEdgeGeo, palletEdgeMat)
+    palletEdges.position.copy(palletMesh.position)
+    scene.add(palletEdges)
+
+    const baseL = product.standardLength || 1
+    const baseW = product.standardWidth || 1
+    const baseH = product.standardHeight || 1
+    const gapRatio = 0.96
+
+    const unitL = baseL
+    const unitW = baseW
+    const unitH = isBag ? baseH * 0.6 : baseH
+
+    const unitGeo = new THREE.BoxGeometry(unitL * gapRatio, unitH, unitW * gapRatio)
+    const unitMat = new THREE.MeshStandardMaterial({
+      color: isBag ? 0x27ae60 : 0xe67e22,
+      opacity: 0.95,
+      transparent: true
+    })
+
+    const maxPerRow = Math.max(1, Math.floor(palletLength / unitL))
+    const maxPerCol = Math.max(1, Math.floor(palletWidth / unitW))
+    const perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+    let minX = Number.POSITIVE_INFINITY
+    let maxX = Number.NEGATIVE_INFINITY
+    let minZ = Number.POSITIVE_INFINITY
+    let maxZ = Number.NEGATIVE_INFINITY
+    let maxTop = Number.NEGATIVE_INFINITY
+
+    const pattern = tpl.id
+
+    for (let idx = 0; idx < qty; idx++) {
+      const layer = Math.floor(idx / perLayer)
+      const posInLayer = idx % perLayer
+      const row = Math.floor(posInLayer / maxPerRow)
+      const col = posInLayer % maxPerRow
+
+      let dx = 0
+      let rotY = 0
+
+      if (pattern === 'brick') {
+        dx = layer % 2 === 1 ? unitL / 2 : 0
+      } else if (pattern === 'cross') {
+        if ((row + col) % 2 === 1) {
+          rotY = Math.PI / 2
+        }
+      }
+
+      const xStart = -palletLength / 2 + unitL / 2
+      const zStart = -palletWidth / 2 + unitW / 2
+
+      let x = xStart + col * unitL + dx
+      const z = zStart + row * unitW
+      const y = palletHeight + unitH / 2 + layer * unitH
+
+      const halfPalL = palletLength / 2
+      const halfPalW = palletWidth / 2
+      const halfL = unitL / 2
+      const halfW = unitW / 2
+      x = Math.min(halfPalL - halfL, Math.max(-halfPalL + halfL, x))
+      const clampedZ = Math.min(halfPalW - halfW, Math.max(-halfPalW + halfW, z))
+
+      const minUx = x - halfL
+      const maxUx = x + halfL
+      const minUz = clampedZ - halfW
+      const maxUz = clampedZ + halfW
+
+      if (minUx < minX) minX = minUx
+      if (maxUx > maxX) maxX = maxUx
+      if (minUz < minZ) minZ = minUz
+      if (maxUz > maxZ) maxZ = maxUz
+
+      const top = y + unitH / 2
+      if (top > maxTop) maxTop = top
+
+      const mesh = new THREE.Mesh(unitGeo, unitMat)
+      mesh.position.set(x, y, clampedZ)
+      mesh.rotation.y = rotY
+      scene.add(mesh)
+
+      const edgeGeo = new THREE.EdgesGeometry(unitGeo)
+      const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
+      const edges = new THREE.LineSegments(edgeGeo, edgeMat)
+      edges.position.copy(mesh.position)
+      edges.rotation.copy(mesh.rotation)
+      scene.add(edges)
+    }
+
+    camera.position.set(2, 2, 2)
+    camera.lookAt(0, palletHeight, 0)
+
+    autoPreviewContexts[tpl.id] = { scene, camera, renderer, controls }
+
+    const blockLength =
+      Number.isFinite(maxX) && Number.isFinite(minX) && maxX > minX ? maxX - minX : baseL
+    const blockWidth =
+      Number.isFinite(maxZ) && Number.isFinite(minZ) && maxZ > minZ ? maxZ - minZ : baseW
+    const blockHeight =
+      Number.isFinite(maxTop) && maxTop > palletHeight ? maxTop - palletHeight : baseH
+
+    autoPreviewBlockDims.value[tpl.id] = {
+      length: blockLength,
+      width: blockWidth,
+      height: blockHeight
+    }
+  })
+
+  if (autoPreviewAnimationId === null) {
+    animateAutoPreviews()
+  }
+}
+
+const animateAutoPreviews = () => {
+  const contexts = Object.values(autoPreviewContexts)
+  if (!contexts.length) return
+  autoPreviewAnimationId = requestAnimationFrame(animateAutoPreviews)
+  contexts.forEach((ctx) => {
+    if (!ctx) return
+    if (ctx.controls) ctx.controls.update()
+    ctx.renderer.render(ctx.scene, ctx.camera)
+  })
+}
+
+const openAutoLayoutPreview = async () => {
+  if (!items.value.length) {
+    ElMessage.error('Chưa có hàng nào trong yêu cầu để xem bố trí trên pallet')
+    return
+  }
+  showAutoLayoutDialog.value = true
+  await nextTick()
+  initAutoPreviewScenes()
+}
+
+const handleSelectAutoTemplate = (id: string) => {
+  selectedAutoLayoutId.value = id
+}
+
+onBeforeUnmount(() => {
+  if (autoPreviewAnimationId !== null) {
+    cancelAnimationFrame(autoPreviewAnimationId)
+    autoPreviewAnimationId = null
+  }
+  Object.values(autoPreviewContexts).forEach((ctx) => {
+    if (!ctx) return
+    if (ctx.controls) ctx.controls.dispose()
+    ctx.renderer.dispose()
+  })
+})
+
 const productNameMap = computed<Record<number, string>>(() => {
   const map: Record<number, string> = {}
   products.value.forEach((p) => {
@@ -431,11 +708,6 @@ const addItemToList = () => {
   }
   if (itemForm.quantity <= 0 || itemForm.unitPrice <= 0 || itemForm.totalAmount <= 0) {
     ElMessage.error('Số lượng, đơn giá và thành tiền phải lớn hơn 0')
-    return
-  }
-
-  if (!itemForm.length || !itemForm.width || !itemForm.height) {
-    ElMessage.error('Vui lòng nhập đầy đủ chiều dài, rộng, cao của hàng hóa')
     return
   }
 
@@ -490,7 +762,12 @@ const submitRequest = async () => {
     warehouseId: selectedWarehouseId.value,
     zoneId: selectedZoneId.value,
     items: items.value,
-    notes: notes.value || undefined
+    notes: notes.value || undefined,
+    stackMode: stackMode.value,
+    autoStackTemplate:
+      stackMode.value === 'auto'
+        ? (selectedAutoLayoutId.value as 'straight' | 'brick' | 'cross' | null)
+        : undefined
   }
   submitting.value = true
   try {
@@ -514,6 +791,8 @@ const submitRequest = async () => {
       customPalletForm.maxWeight = 1000
       customPalletForm.maxStackHeight = 1.5
       customPalletForm.palletType = ''
+      showAutoLayoutDialog.value = false
+      selectedAutoLayoutId.value = null
       // Reload danh sách yêu cầu nhập kho phía dưới
       await loadInboundRequests()
     }
@@ -521,6 +800,23 @@ const submitRequest = async () => {
     ElMessage.error(error?.message || 'Lỗi khi tạo yêu cầu nhập kho')
   } finally {
     submitting.value = false
+  }
+}
+
+const handleSubmitClick = async () => {
+  if (!selectedWarehouseId.value) {
+    ElMessage.error('Vui lòng chọn kho')
+    return
+  }
+  if (items.value.length === 0) {
+    ElMessage.error('Vui lòng thêm ít nhất một hàng hóa')
+    return
+  }
+
+  if (stackMode.value === 'auto') {
+    await openAutoLayoutPreview()
+  } else {
+    await submitRequest()
   }
 }
 
@@ -786,6 +1082,14 @@ onMounted(() => {
             <span v-else class="text-gray">Chưa chọn sản phẩm</span>
           </div>
         </ElFormItem>
+        <ElFormItem label="Cách xếp hàng" required>
+          <div>
+            <ElRadioGroup v-model="stackMode">
+              <ElRadioButton label="auto">Hệ thống gợi ý cách xếp</ElRadioButton>
+              <ElRadioButton label="manual">Bạn tự xếp trên pallet</ElRadioButton>
+            </ElRadioGroup>
+          </div>
+        </ElFormItem>
         <ElRow :gutter="20">
           <ElCol :xs="24" :md="12">
             <ElFormItem :label="quantityLabel" required>
@@ -832,22 +1136,6 @@ onMounted(() => {
             </ElFormItem>
           </ElCol>
         </ElRow>
-        <ElFormItem label="Kích thước khối hàng trên pallet (m)">
-          <div class="inline-inputs dims-group">
-            <div class="dim-field">
-              <span class="dim-label">Chiều dài (L)</span>
-              <ElInputNumber v-model="itemForm.length" :min="0.01" :step="0.01" />
-            </div>
-            <div class="dim-field">
-              <span class="dim-label">Chiều rộng (W)</span>
-              <ElInputNumber v-model="itemForm.width" :min="0.01" :step="0.01" />
-            </div>
-            <div class="dim-field">
-              <span class="dim-label">Chiều cao (H)</span>
-              <ElInputNumber v-model="itemForm.height" :min="0.01" :step="0.01" />
-            </div>
-          </div>
-        </ElFormItem>
         <ElFormItem>
           <ElButton type="primary" @click="addItemToList">
             <Icon icon="vi-ant-design:plus-circle-outlined" />
@@ -892,7 +1180,7 @@ onMounted(() => {
           <ElInput v-model="notes" type="textarea" :rows="3" />
         </ElFormItem>
         <ElFormItem>
-          <ElButton type="primary" :loading="submitting" @click="submitRequest">
+          <ElButton type="primary" :loading="submitting" @click="handleSubmitClick">
             <Icon icon="vi-ant-design:send-outlined" />
             Gửi yêu cầu nhập kho
           </ElButton>
@@ -942,6 +1230,44 @@ onMounted(() => {
       </ElTable>
       <div v-else class="text-gray text-sm">Chưa có yêu cầu nhập kho nào.</div>
     </ElCard>
+
+    <ElDialog
+      v-model="showAutoLayoutDialog"
+      title="Chọn kiểu xếp do hệ thống gợi ý"
+      width="70%"
+      top="5vh"
+    >
+      <div class="auto-layout-grid">
+        <div
+          v-for="tpl in autoStackTemplates"
+          :key="tpl.id"
+          :class="['auto-layout-card', { 'is-selected': tpl.id === selectedAutoLayoutId }]"
+          @click="handleSelectAutoTemplate(tpl.id)"
+        >
+          <div class="auto-layout-card__header">
+            <span class="auto-layout-card__title">{{ tpl.title }}</span>
+          </div>
+          <div
+            class="auto-layout-card__canvas"
+            :ref="(el) => setAutoPreviewContainer(tpl.id, el)"
+          ></div>
+          <div class="auto-layout-card__info">
+            <div class="auto-layout-card__dims" v-if="autoPreviewBlockDims[tpl.id]">
+              <strong>Kích thước khối hàng trên pallet (L×W×H):</strong>
+              {{ autoPreviewBlockDims[tpl.id].length.toFixed(2) }} ×
+              {{ autoPreviewBlockDims[tpl.id].width.toFixed(2) }} ×
+              {{ autoPreviewBlockDims[tpl.id].height.toFixed(2) }} m
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <ElButton @click="showAutoLayoutDialog = false">Hủy</ElButton>
+        <ElButton type="primary" :loading="submitting" @click="submitRequest">
+          Tạo yêu cầu với kiểu xếp này
+        </ElButton>
+      </template>
+    </ElDialog>
   </div>
 </template>
 
@@ -1010,5 +1336,53 @@ onMounted(() => {
 .checkbox-label {
   display: inline-flex;
   align-items: center;
+}
+
+.auto-layout-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.auto-layout-card {
+  padding: 16px;
+  color: #f9fafb;
+  cursor: pointer;
+  background: #1f2937;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 35%);
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.auto-layout-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
+}
+
+.auto-layout-card.is-selected {
+  border-color: #facc15;
+  box-shadow: 0 0 0 2px rgb(250 204 21 / 65%);
+}
+
+.auto-layout-card__header {
+  margin-bottom: 8px;
+}
+
+.auto-layout-card__title {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.auto-layout-card__canvas {
+  width: 100%;
+  height: 200px;
+  overflow: hidden;
+  background: #111827;
+  border-radius: 8px;
 }
 </style>

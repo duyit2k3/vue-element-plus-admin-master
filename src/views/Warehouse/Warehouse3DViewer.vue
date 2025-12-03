@@ -54,7 +54,7 @@ let raycaster: THREE.Raycaster
 let mouse: THREE.Vector2
 
 // UI State
-const viewMode = ref<'zones' | 'items' | 'pallets' | ''>('')
+const viewMode = ref<'zones' | 'items' | 'pallets' | 'racks' | ''>('')
 const showGrid = ref(true)
 const showLabels = ref(false)
 const selectedObject = ref<any>(null)
@@ -418,26 +418,29 @@ const renderRacks = () => {
       rack.positionZ + rack.width / 2
     )
     frameLines.name = `rack_${rack.rackId}_frame`
+    frameLines.userData = { type: 'rack', data: rack }
     scene.add(frameLines)
 
-    rack.shelves?.forEach((shelf: any) => {
-      const shelfGeometry = new THREE.BoxGeometry(shelf.length, 0.05, shelf.width)
-      const shelfMaterial = new THREE.MeshPhongMaterial({ color: 0xf5f5f5 })
-      const shelfMesh = new THREE.Mesh(shelfGeometry, shelfMaterial)
-      shelfMesh.position.set(
-        rack.positionX + shelf.length / 2,
-        shelf.positionY,
-        rack.positionZ + shelf.width / 2
-      )
-      shelfMesh.castShadow = true
-      shelfMesh.receiveShadow = true
-      shelfMesh.name = `shelf_${shelf.shelfId}`
-      scene.add(shelfMesh)
-    })
+    if (rack.shelves) {
+      rack.shelves.forEach((shelf: any) => {
+        const shelfGeometry = new THREE.BoxGeometry(shelf.length, 0.05, shelf.width)
+        const shelfMaterial = new THREE.MeshPhongMaterial({ color: 0xf5f5f5 })
+        const shelfMesh = new THREE.Mesh(shelfGeometry, shelfMaterial)
+        shelfMesh.position.set(
+          rack.positionX + shelf.length / 2,
+          shelf.positionY,
+          rack.positionZ + shelf.width / 2
+        )
+        shelfMesh.castShadow = true
+        shelfMesh.receiveShadow = true
+        shelfMesh.name = `shelf_${shelf.shelfId}`
+        shelfMesh.userData = { type: 'shelf', data: shelf }
+        scene.add(shelfMesh)
+      })
+    }
   })
 }
 
-// Render pallet
 const renderPallet = (pallet: any) => {
   const geometry = new THREE.BoxGeometry(
     pallet.palletLength,
@@ -461,13 +464,23 @@ const renderPallet = (pallet: any) => {
   mesh.castShadow = true
   mesh.receiveShadow = true
 
+  // Thêm viền để dễ quan sát biên pallet trong 3D
+  const edgeGeo = new THREE.EdgesGeometry(geometry)
+  const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
+  const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat)
+  edgeLines.position.copy(mesh.position)
+  edgeLines.userData = mesh.userData
+  edgeLines.name = `${mesh.name}_outline`
+
   scene.add(mesh)
+  scene.add(edgeLines)
 }
 
 // Render item (box on pallet)
 const renderItem = (item: any, pallet: any) => {
   const itemType = typeof item.itemType === 'string' ? item.itemType.toLowerCase() : ''
   const shape = typeof item.shape === 'string' ? item.shape.toLowerCase() : ''
+  // ... rest of the code remains the same ...
   const isBox = itemType === 'box'
   const isBag = itemType === 'bag' || shape === 'bag' || shape === 'sack' || shape === 'bao'
 
@@ -488,6 +501,12 @@ const renderItem = (item: any, pallet: any) => {
     color = 0xf39c12 // Orange for high priority
   }
 
+  // Nếu backend đã có layout chi tiết (manual hoặc auto) thì ưu tiên vẽ theo stackUnits
+  if (Array.isArray(item.stackUnits) && item.stackUnits.length > 0) {
+    renderItemFromStackUnits(item, pallet, color)
+    return
+  }
+
   if (isBox || isBag) {
     renderBoxItemAsCartons(item, pallet, color)
     return
@@ -497,7 +516,7 @@ const renderItem = (item: any, pallet: any) => {
   const material = new THREE.MeshPhongMaterial({ color })
   const mesh = new THREE.Mesh(geometry, material)
 
-  // Position relative to pallet
+  // Position relative to pallet (stack khối đơn giản nếu không có layout chi tiết)
   mesh.position.set(
     pallet.positionX + (item.positionX || 0) + item.length / 2,
     pallet.positionY + pallet.palletHeight + (item.positionY || 0) + item.height / 2,
@@ -517,6 +536,54 @@ const renderItem = (item: any, pallet: any) => {
   scene.add(line)
 }
 
+// Render từ stackUnits (layout chi tiết từ InboundItemStackUnits)
+const renderItemFromStackUnits = (item: any, pallet: any, color: number) => {
+  const units = (item.stackUnits || []) as any[]
+  if (!units.length) return
+
+  // Trong layout inbound, localX/Z được tính tương đối so với tâm pallet, mặt đất = 0
+  const palletCenterX = pallet.positionX + pallet.palletLength / 2
+  const palletBaseY = pallet.positionY
+  const palletCenterZ = pallet.positionZ + pallet.palletWidth / 2
+
+  const material = new THREE.MeshPhongMaterial({
+    color,
+    opacity: 0.95,
+    transparent: true
+  })
+  const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 })
+
+  units.forEach((u) => {
+    const length = Number(u.length) || 0
+    const width = Number(u.width) || 0
+    const height = Number(u.height) || 0
+    if (length <= 0 || width <= 0 || height <= 0) return
+
+    const geometry = new THREE.BoxGeometry(length, height, width)
+    const mesh = new THREE.Mesh(geometry, material)
+
+    mesh.position.set(
+      palletCenterX + Number(u.localX || 0),
+      palletBaseY + Number(u.localY || 0),
+      palletCenterZ + Number(u.localZ || 0)
+    )
+    mesh.rotation.y = Number(u.rotationY || 0)
+    mesh.userData = { type: 'item', data: item }
+    mesh.name = `item_${item.itemId}_unit_${u.unitIndex ?? 0}`
+    mesh.castShadow = true
+
+    const edgeGeo = new THREE.EdgesGeometry(geometry)
+    const edgeLines = new THREE.LineSegments(edgeGeo, edgeMaterial)
+    edgeLines.position.copy(mesh.position)
+    edgeLines.rotation.copy(mesh.rotation)
+    edgeLines.userData = mesh.userData
+    edgeLines.name = `${mesh.name}_outline`
+
+    scene.add(mesh)
+    scene.add(edgeLines)
+  })
+}
+
 const renderBoxItemAsCartons = (item: any, pallet: any, color: number) => {
   const rawStackL = Number(item.length) || 0
   const rawStackW = Number(item.width) || 0
@@ -528,23 +595,46 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number) => {
 
   const quantity = Math.max(1, Number(item.unitQuantity ?? 0) || 1)
 
-  const stdL = (item.standardLength ?? null) as number | null
-  const stdW = (item.standardWidth ?? null) as number | null
-
+  // Kích thước khối tổng của hàng trên pallet (đã được inbound/approval tính sẵn)
   const stackLength = rawStackL
   const stackWidth = rawStackW
   const stackHeight = rawStackH
 
-  const unitL = stdL && stdL > 0 ? stdL : stackLength
-  const unitW = stdW && stdW > 0 ? stdW : stackWidth
+  // Kích thước chuẩn 1 đơn vị (nếu có) từ product
+  const stdL = (item.standardLength ?? null) as number | null
+  const stdW = (item.standardWidth ?? null) as number | null
 
+  // Bước 1: ước lượng kích thước 1 đơn vị trên mặt phẳng (L/W)
+  let unitL = stdL && stdL > 0 ? stdL : 0
+  let unitW = stdW && stdW > 0 ? stdW : 0
+
+  // Nếu không có kích thước chuẩn, hoặc kích thước chuẩn gần bằng cả khối (khiến chỉ được 1 đơn vị/chiều)
+  // thì suy ra kích thước đơn vị từ diện tích khối tổng và số lượng.
+  if (!unitL || !unitW || unitL >= stackLength || unitW >= stackWidth) {
+    const effectiveQty = Math.max(1, quantity)
+    const area = Math.max(0.0001, stackLength * stackWidth)
+    const unitArea = area / effectiveQty
+    const aspect = stackLength > 0 && stackWidth > 0 ? stackLength / stackWidth : 1
+
+    // Ước lượng L/W sao cho L*W ≈ unitArea và giữ tỉ lệ gần với tỉ lệ cạnh của pallet
+    unitL = Math.sqrt(unitArea * aspect)
+    unitW = Math.sqrt(unitArea / aspect)
+  }
+
+  // Bước 2: Tính số đơn vị tối đa trên 1 lớp theo 2 chiều
   const maxPerRow = Math.max(1, Math.floor(stackLength / unitL))
   const maxPerCol = Math.max(1, Math.floor(stackWidth / unitW))
-  const perLayer = Math.max(1, maxPerRow * maxPerCol)
+  let perLayer = Math.max(1, maxPerRow * maxPerCol)
+
+  // Nếu perLayer vẫn < 1 (do số liệu quá nhỏ) thì fallback tối thiểu 1
+  if (perLayer < 1) perLayer = 1
+
+  // Bước 3: Tính số tầng
   const layers = Math.max(1, Math.ceil(quantity / perLayer))
 
-  const boxLength = stackLength / maxPerRow
-  const boxWidth = stackWidth / maxPerCol
+  // Kích thước thực tế của 1 thùng trên 3D (chia đều theo grid)
+  const boxLength = stackLength / Math.max(1, maxPerRow)
+  const boxWidth = stackWidth / Math.max(1, maxPerCol)
   const boxHeight = stackHeight / layers
 
   const geometry = new THREE.BoxGeometry(boxLength, boxHeight, boxWidth)
@@ -604,7 +694,7 @@ const onCanvasClick = (event: MouseEvent) => {
   if (!container.value) return
 
   const mode = viewMode.value
-  if (mode !== 'zones' && mode !== 'items' && mode !== 'pallets') {
+  if (mode !== 'zones' && mode !== 'items' && mode !== 'pallets' && mode !== 'racks') {
     // Chỉ cho phép xem chi tiết khi người dùng đã chọn rõ chế độ xem
     return
   }
@@ -626,6 +716,8 @@ const onCanvasClick = (event: MouseEvent) => {
   } else if (mode === 'pallets') {
     // Ưu tiên hit pallet, nhưng nếu click trúng hàng trên pallet thì vẫn xử lý được
     typePriority = ['pallet', 'item']
+  } else if (mode === 'racks') {
+    typePriority = ['rack', 'shelf']
   }
 
   let targetUserData: any = null
@@ -651,6 +743,14 @@ const handleObjectClick = (userData: any) => {
     showZoneDetails(userData.data)
   } else if (userData.type === 'pallet') {
     showPalletDetails(userData.data)
+  } else if (userData.type === 'rack') {
+    showRackDetails(userData.data)
+  } else if (userData.type === 'shelf') {
+    const shelf = userData.data
+    const rack = warehouseData.value?.racks?.find((r) => r.rackId === shelf.rackId)
+    if (rack) {
+      showRackDetails(rack)
+    }
   } else if (userData.type === 'item') {
     // Ở chế độ xem pallet, click vào hàng cũng xem chi tiết pallet
     if (viewMode.value === 'pallets' && warehouseData.value) {
@@ -686,6 +786,79 @@ const showZoneDetails = (zone: any) => {
     </div>
     `,
     `🏢 Chi tiết khu vực`,
+    {
+      dangerouslyUseHTMLString: true,
+      confirmButtonText: 'Đóng'
+    }
+  )
+}
+
+const showRackDetails = (rack: any) => {
+  const shelves = (rack.shelves || []) as any[]
+  const totalLevels = shelves.length
+
+  let spacingHtml = ''
+
+  if (totalLevels > 0) {
+    const sorted = [...shelves].sort((a, b) => {
+      if (a.shelfLevel != null && b.shelfLevel != null) {
+        return a.shelfLevel - b.shelfLevel
+      }
+      return Number(a.positionY || 0) - Number(b.positionY || 0)
+    })
+
+    const baseY = Number(rack.positionY || 0)
+    spacingHtml += '<ul>'
+
+    const first = sorted[0]
+    const firstY = Number(first.positionY || 0)
+    const gapBase = firstY - baseY
+    if (!Number.isNaN(gapBase) && gapBase > 0) {
+      spacingHtml += `<li>Từ nền kệ đến Tầng ${first.shelfLevel ?? 1}: ${gapBase.toFixed(2)} m</li>`
+    }
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const current = sorted[i]
+      const next = sorted[i + 1]
+      const y1 = Number(current.positionY || 0)
+      const y2 = Number(next.positionY || 0)
+      const gap = y2 - y1
+      if (!Number.isNaN(gap) && gap > 0) {
+        const level1 = current.shelfLevel ?? i + 1
+        const level2 = next.shelfLevel ?? i + 2
+        spacingHtml += `<li>Tầng ${level1} – Tầng ${level2}: ${gap.toFixed(2)} m</li>`
+      }
+    }
+
+    const topRackY = baseY + Number(rack.height || 0)
+    const last = sorted[sorted.length - 1]
+    const lastY = Number(last.positionY || 0)
+    const gapTop = topRackY - lastY
+    if (!Number.isNaN(gapTop) && gapTop > 0) {
+      const lastLevel = last.shelfLevel ?? totalLevels
+      spacingHtml += `<li>Tầng ${lastLevel} – Đỉnh kệ: ${gapTop.toFixed(2)} m</li>`
+    }
+
+    spacingHtml += '</ul>'
+  } else {
+    spacingHtml = '<p>Chưa cấu hình tầng kệ.</p>'
+  }
+
+  const zone = warehouseData.value?.zones?.find((z) => z.zoneId === rack.zoneId)
+
+  ElMessageBox.alert(
+    `
+    <div style="line-height: 1.8">
+      <p><strong>Tên kệ:</strong> ${rack.rackName || `Kệ #${rack.rackId}`}</p>
+      <p><strong>Khu vực:</strong> ${zone?.zoneName || `Zone #${rack.zoneId}`}</p>
+      <p><strong>Kích thước kệ:</strong> ${rack.length}m × ${rack.width}m × ${rack.height}m</p>
+      <p><strong>Vị trí gốc (X, Y, Z):</strong> (${rack.positionX}, ${rack.positionY}, ${rack.positionZ})</p>
+      <p><strong>Số tầng kệ:</strong> ${totalLevels}</p>
+      <p><strong>Khoảng cách các tầng (theo chiều cao Y):</strong></p>
+      ${spacingHtml}
+    </div>
+    `,
+    `🗄️ Chi tiết Kệ`,
     {
       dangerouslyUseHTMLString: true,
       confirmButtonText: 'Đóng'
@@ -926,6 +1099,7 @@ onBeforeUnmount(() => {
               <ElRadioButton value="zones">Khu vực</ElRadioButton>
               <ElRadioButton value="items">Hàng hóa</ElRadioButton>
               <ElRadioButton value="pallets">Pallet</ElRadioButton>
+              <ElRadioButton value="racks">Kệ</ElRadioButton>
             </ElRadioGroup>
             <ElButton size="small" style="width: 100%; margin-top: 10px" @click="resetViewMode">
               <Icon icon="vi-ep:refresh-left" />

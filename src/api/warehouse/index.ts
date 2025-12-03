@@ -135,6 +135,17 @@ export interface PalletLocation {
   maxStackHeight?: number | null
 }
 
+export interface ItemStackUnit {
+  unitIndex: number
+  localX: number
+  localY: number
+  localZ: number
+  length: number
+  width: number
+  height: number
+  rotationY: number
+}
+
 export interface ItemAllocation {
   allocationId: number
   itemId: number
@@ -184,6 +195,7 @@ export interface ItemAllocation {
   unitPrice?: number | null
   totalAmount?: number | null
   unitQuantity?: number | null
+  stackUnits?: ItemStackUnit[] | null
 }
 
 export interface WarehouseGate {

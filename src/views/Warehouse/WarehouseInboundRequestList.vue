@@ -33,6 +33,36 @@ const loadingWarehouses = ref(false)
 const inboundRequests = ref<InboundRequestListItem[]>([])
 const loadingInboundRequests = ref(false)
 
+// Lọc trạng thái phiếu: pending (chờ duyệt), cancelled (đã từ chối), completed (đã duyệt)
+const statusFilters = ref<string[]>(['pending', 'cancelled', 'completed'])
+
+const effectiveStatusFilter = computed(() => {
+  // Nếu chỉ chọn 1 trạng thái thì gửi lên backend; nếu nhiều hơn thì để backend trả tất cả và lọc ở FE
+  if (statusFilters.value.length === 1) {
+    return statusFilters.value[0]
+  }
+  if (statusFilters.value.length === 0) {
+    // Nếu không chọn gì thì không lọc (xem như tất cả)
+    return undefined
+  }
+  return undefined
+})
+
+const filteredInboundRequests = computed(() => {
+  if (!inboundRequests.value.length) return []
+
+  // Nếu chỉ chọn 0 hoặc 1 trạng thái thì đã xử lý bởi backend (hoặc không lọc) -> trả nguyên
+  if (!statusFilters.value.length || statusFilters.value.length === 1) {
+    return inboundRequests.value
+  }
+
+  const selectedSet = new Set(statusFilters.value.map((s) => s.toLowerCase()))
+  return inboundRequests.value.filter((r) => {
+    const st = (r.status || '').toLowerCase()
+    return selectedSet.has(st)
+  })
+})
+
 const loadWarehouses = async () => {
   loadingWarehouses.value = true
   try {
@@ -52,7 +82,12 @@ const loadWarehouses = async () => {
     if (res && (res.statusCode === 200 || res.code === 0)) {
       warehouses.value = (res.data || []) as WarehouseListItem[]
 
-      if (!selectedWarehouseKey.value && warehouses.value.length > 0) {
+      // Với warehouse_owner: mặc định không chọn kho để xem toàn bộ yêu cầu
+      if (
+        userRole.value !== 'warehouse_owner' &&
+        !selectedWarehouseKey.value &&
+        warehouses.value.length > 0
+      ) {
         const qId = route.query.warehouseId ? Number(route.query.warehouseId) : undefined
         const matched = qId ? warehouses.value.find((w) => w.warehouseId === qId) : undefined
         const first = matched ?? warehouses.value[0]
@@ -124,12 +159,15 @@ const handleReject = async (row: InboundRequestListItem) => {
 const loadInboundRequests = async () => {
   loadingInboundRequests.value = true
   try {
-    const params: { warehouseId?: number; zoneId?: number } = {}
+    const params: { warehouseId?: number; zoneId?: number; status?: string } = {}
     if (selectedWarehouseId.value) {
       params.warehouseId = selectedWarehouseId.value
     }
     if (selectedZoneId.value) {
       params.zoneId = selectedZoneId.value
+    }
+    if (effectiveStatusFilter.value) {
+      params.status = effectiveStatusFilter.value
     }
     const res = await inboundApi.getInboundRequests(params)
     if (res && (res.statusCode === 200 || res.code === 0)) {
@@ -161,6 +199,13 @@ watch(
   () => selectedWarehouseKey.value,
   () => {
     syncSelectedWarehouse()
+    loadInboundRequests()
+  }
+)
+
+watch(
+  () => statusFilters.value.slice(),
+  () => {
     loadInboundRequests()
   }
 )
@@ -200,6 +245,22 @@ onMounted(() => {
             />
           </ElSelect>
         </ElFormItem>
+        <ElFormItem label="Trạng thái">
+          <div class="status-filters">
+            <label>
+              <input v-model="statusFilters" type="checkbox" value="pending" />
+              Chờ duyệt
+            </label>
+            <label>
+              <input v-model="statusFilters" type="checkbox" value="cancelled" />
+              Đã từ chối
+            </label>
+            <label>
+              <input v-model="statusFilters" type="checkbox" value="completed" />
+              Đã duyệt
+            </label>
+          </div>
+        </ElFormItem>
       </ElForm>
     </ElCard>
 
@@ -219,8 +280,8 @@ onMounted(() => {
         </div>
       </template>
       <ElTable
-        v-if="inboundRequests.length"
-        :data="inboundRequests"
+        v-if="filteredInboundRequests.length"
+        :data="filteredInboundRequests"
         border
         size="small"
         v-loading="loadingInboundRequests"
@@ -238,6 +299,12 @@ onMounted(() => {
           </template>
         </ElTableColumn>
         <ElTableColumn prop="inboundDate" label="Ngày yêu cầu" width="160" />
+        <ElTableColumn label="Kiểu xếp" width="120">
+          <template #default="{ row }">
+            <span v-if="row.stackMode && row.stackMode.toLowerCase() === 'manual'">Tự xếp</span>
+            <span v-else>Hệ thống</span>
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="status" label="Trạng thái" width="120" />
         <ElTableColumn prop="totalItems" label="Số hàng" width="100" />
         <ElTableColumn prop="totalPallets" label="Số pallet" width="110" />

@@ -19,6 +19,8 @@ export interface CreateInboundRequestRequest {
   zoneId?: number
   items: InboundItemRequest[]
   notes?: string
+  stackMode: 'auto' | 'manual'
+  autoStackTemplate?: 'straight' | 'brick' | 'cross' | null
 }
 
 export interface CreateInboundResponse {
@@ -47,6 +49,7 @@ export interface InboundRequestListItem {
   status?: string | null
   notes?: string | null
   createdByName?: string | null
+  stackMode?: string | null
 }
 
 export interface InboundItemDetail {
@@ -83,6 +86,7 @@ export interface InboundRequestDetail {
   notes?: string | null
   createdByName?: string | null
   items: InboundItemDetail[]
+  stackMode?: string | null
 }
 
 export interface InboundApprovalItem {
@@ -120,6 +124,7 @@ export interface InboundApprovalView {
   status?: string | null
   notes?: string | null
   items: InboundApprovalItem[]
+  stackMode?: string | null
 }
 
 export interface PreferredPalletLayout {
@@ -160,6 +165,26 @@ export interface UpdateInboundStatusRequest {
   notes?: string
 }
 
+export interface ManualStackUnitRequest {
+  unitIndex: number
+  localX: number
+  localY: number
+  localZ: number
+  length: number
+  width: number
+  height: number
+  rotationY: number
+}
+
+export interface ManualStackLayoutItemRequest {
+  inboundItemId: number
+  units: ManualStackUnitRequest[]
+}
+
+export interface ManualStackLayoutRequest {
+  items: ManualStackLayoutItemRequest[]
+}
+
 const inboundApi = {
   createInboundRequest: (data: CreateInboundRequestRequest) => {
     return request.post<CreateInboundResponse>({ url: '/Inbound/create-request', data })
@@ -184,6 +209,9 @@ const inboundApi = {
       url: `/Inbound/${receiptId}/optimize-layout`,
       data
     })
+  },
+  saveManualStackLayout: (receiptId: number, data: ManualStackLayoutRequest) => {
+    return request.put({ url: `/Inbound/${receiptId}/manual-stack-layout`, data })
   }
 }
 

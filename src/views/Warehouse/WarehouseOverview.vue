@@ -11,6 +11,21 @@ const userStore = useUserStore()
 const loading = ref(true)
 const warehouses = ref<WarehouseListItem[]>([])
 
+const userRole = computed(() => userStore.getUserInfo?.role?.toLowerCase() || '')
+
+const displayWarehouses = computed(() => {
+  if (userRole.value === 'warehouse_owner') {
+    const map = new Map<number, WarehouseListItem>()
+    warehouses.value.forEach((w) => {
+      if (!map.has(w.warehouseId)) {
+        map.set(w.warehouseId, w)
+      }
+    })
+    return Array.from(map.values())
+  }
+  return warehouses.value
+})
+
 // Statistics
 const stats = computed(() => ({
   totalWarehouses: warehouses.value.length,
@@ -31,6 +46,7 @@ const loadWarehouses = async () => {
 
     let res: any
     if (userInfo.role === 'warehouse_owner') {
+      // Chỉ lấy danh sách kho của chủ kho (không cần chi tiết khu vực khách)
       res = await warehouseApi.getWarehousesByOwner(userInfo.accountId!)
     } else if (userInfo.role === 'customer') {
       res = await warehouseApi.getWarehousesByCustomer(userInfo.accountId!)
@@ -146,18 +162,20 @@ onMounted(() => {
 
           <div class="warehouse-grid">
             <ElCard
-              v-for="warehouse in warehouses.slice(0, 6)"
-              :key="warehouse.zoneId ?? warehouse.warehouseId"
+              v-for="warehouse in displayWarehouses.slice(0, 6)"
+              :key="warehouse.warehouseId"
               shadow="hover"
               class="warehouse-card"
             >
               <div class="warehouse-info">
                 <h3>{{ warehouse.warehouseName || 'Chưa đặt tên' }}</h3>
-                <p class="text-gray-500">{{ warehouse.ownerName }}</p>
-                <p v-if="warehouse.zoneName" class="text-sm text-gray-500">
-                  Khu vực: {{ warehouse.zoneName }}
-                  <span v-if="warehouse.zoneType">({{ warehouse.zoneType }})</span>
+                <p v-if="userRole === 'customer'" class="text-gray-500">
+                  {{ warehouse.zoneName || 'Chưa phân bổ khu vực' }}
                 </p>
+                <p v-else-if="userRole !== 'warehouse_owner'" class="text-gray-500">
+                  {{ warehouse.ownerName }}
+                </p>
+                <!-- Với warehouse_owner không cần hiển thị khu vực khách thuê -->
                 <p class="text-sm">
                   <Icon icon="vi-ant-design:container-outlined" />
                   {{ warehouse.length }}m × {{ warehouse.width }}m × {{ warehouse.height }}m
