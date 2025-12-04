@@ -133,6 +133,7 @@ export interface PalletLocation {
   palletType?: string | null
   maxWeight?: number | null
   maxStackHeight?: number | null
+  palletQrContent?: string | null
 }
 
 export interface ItemStackUnit {

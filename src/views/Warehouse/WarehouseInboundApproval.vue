@@ -75,45 +75,43 @@ const currentBlockDims = computed(() => {
     return { length: 0, width: 0, height: 0 }
   }
 
-  if (isManualMode.value) {
-    const units = manualLayouts.value[item.inboundItemId] || []
-    if (units.length) {
-      let minX = Number.POSITIVE_INFINITY
-      let maxX = Number.NEGATIVE_INFINITY
-      let minZ = Number.POSITIVE_INFINITY
-      let maxZ = Number.NEGATIVE_INFINITY
-      let maxTop = Number.NEGATIVE_INFINITY
+  const units = manualLayouts.value[item.inboundItemId] || []
+  if (units.length) {
+    let minX = Number.POSITIVE_INFINITY
+    let maxX = Number.NEGATIVE_INFINITY
+    let minZ = Number.POSITIVE_INFINITY
+    let maxZ = Number.NEGATIVE_INFINITY
+    let maxTop = Number.NEGATIVE_INFINITY
 
-      const palletHeight = item.palletHeight
+    const palletHeight = item.palletHeight
 
-      for (const u of units) {
-        const halfL = u.length / 2
-        const halfW = u.width / 2
+    for (const u of units) {
+      const halfL = u.length / 2
+      const halfW = u.width / 2
 
-        const minUx = u.localX - halfL
-        const maxUx = u.localX + halfL
-        const minUz = u.localZ - halfW
-        const maxUz = u.localZ + halfW
+      const minUx = u.localX - halfL
+      const maxUx = u.localX + halfL
+      const minUz = u.localZ - halfW
+      const maxUz = u.localZ + halfW
 
-        if (minUx < minX) minX = minUx
-        if (maxUx > maxX) maxX = maxUx
-        if (minUz < minZ) minZ = minUz
-        if (maxUz > maxZ) maxZ = maxUz
+      if (minUx < minX) minX = minUx
+      if (maxUx > maxX) maxX = maxUx
+      if (minUz < minZ) minZ = minUz
+      if (maxUz > maxZ) maxZ = maxUz
 
-        const top = u.localY + u.height / 2
-        if (top > maxTop) maxTop = top
-      }
-
-      let length = maxX - minX
-      let width = maxZ - minZ
-      let height = maxTop - palletHeight
-
-      if (!Number.isFinite(length) || length <= 0) length = item.itemLength
-      if (!Number.isFinite(width) || width <= 0) width = item.itemWidth
-      if (!Number.isFinite(height) || height <= 0) height = item.itemHeight
-
-      return { length, width, height }
+      const top = u.localY + u.height / 2
+      if (top > maxTop) maxTop = top
     }
+
+    let length = maxX - minX
+    let width = maxZ - minZ
+    let height = maxTop - palletHeight
+
+    if (!Number.isFinite(length) || length <= 0) length = item.itemLength
+    if (!Number.isFinite(width) || width <= 0) width = item.itemWidth
+    if (!Number.isFinite(height) || height <= 0) height = item.itemHeight
+
+    return { length, width, height }
   }
 
   return {
@@ -692,9 +690,20 @@ const updatePlacingObjectPosition = (event: PointerEvent) => {
   const halfL = u.length / 2
   const halfW = u.width / 2
 
+  let targetX = point.x
+  let targetZ = point.z
+
+  const gridBase = Math.min(u.length, u.width)
+  const gridStep = Number.isFinite(gridBase) && gridBase > 0 ? gridBase / 10 : 0.05
+
+  if (gridStep > 0) {
+    targetX = Math.round(targetX / gridStep) * gridStep
+    targetZ = Math.round(targetZ / gridStep) * gridStep
+  }
+
   // Tọa độ đề xuất sau khi clamp trong phạm vi pallet
-  const proposedX = THREE.MathUtils.clamp(point.x, -halfPalL + halfL, halfPalL - halfL)
-  const proposedZ = THREE.MathUtils.clamp(point.z, -halfPalW + halfW, halfPalW - halfW)
+  const proposedX = THREE.MathUtils.clamp(targetX, -halfPalL + halfL, halfPalL - halfL)
+  const proposedZ = THREE.MathUtils.clamp(targetZ, -halfPalW + halfW, halfPalW - halfW)
   const y = item.palletHeight + u.height / 2
 
   // Kiểm tra va chạm AABB 2D (X,Z) với các unit đã đặt trước đó
@@ -702,6 +711,9 @@ const updatePlacingObjectPosition = (event: PointerEvent) => {
   const maxX1 = proposedX + halfL
   const minZ1 = proposedZ - halfW
   const maxZ1 = proposedZ + halfW
+
+  const epsilonBase = Math.min(halfL, halfW)
+  const epsilon = Number.isFinite(epsilonBase) && epsilonBase > 0 ? epsilonBase * 0.05 : 0.01
 
   const willOverlap = units.some((other) => {
     if (other.unitIndex === placingUnitIndex) return false
@@ -713,8 +725,13 @@ const updatePlacingObjectPosition = (event: PointerEvent) => {
     const minZ2 = other.localZ - halfW2
     const maxZ2 = other.localZ + halfW2
 
-    // Không giao nhau nếu một trong bốn điều kiện sau đúng
-    if (maxX1 <= minX2 || minX1 >= maxX2 || maxZ1 <= minZ2 || minZ1 >= maxZ2) {
+    // Không giao nhau nếu một trong bốn điều kiện sau đúng (nới lỏng với epsilon nhỏ)
+    if (
+      maxX1 <= minX2 + epsilon ||
+      minX1 >= maxX2 - epsilon ||
+      maxZ1 <= minZ2 + epsilon ||
+      minZ1 >= maxZ2 - epsilon
+    ) {
       return false
     }
     return true
@@ -1071,8 +1088,8 @@ const handleBack = () => {
             </p>
             <p>
               <strong>Kích thước khối hàng trên pallet (L×W×H):</strong>
-              {{ currentBlockDims.length }} × {{ currentBlockDims.width }} ×
-              {{ currentBlockDims.height }} m
+              {{ currentBlockDims.length.toFixed(2) }} × {{ currentBlockDims.width.toFixed(2) }} ×
+              {{ currentBlockDims.height.toFixed(2) }} m
             </p>
             <p v-if="selectedItem.unitLength && selectedItem.unitWidth && selectedItem.unitHeight">
               <strong>Kích thước 1 đơn vị (L×W×H):</strong>

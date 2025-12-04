@@ -11,9 +11,11 @@ import {
   ElOption,
   ElDivider,
   ElMessage,
-  ElMessageBox
+  ElMessageBox,
+  ElDialog
 } from 'element-plus'
 import { Icon } from '@/components/Icon'
+import { Qrcode } from '@/components/Qrcode'
 import { useRouter, useRoute } from 'vue-router'
 import warehouseApi, { type Warehouse3DData } from '@/api/warehouse'
 import { useUserStore } from '@/store/modules/user'
@@ -35,9 +37,18 @@ const canViewInbound = computed(() =>
 )
 
 const goToCreateInbound = () => {
+  const query: Record<string, string> = {
+    warehouseId: String(warehouseId.value)
+  }
+
+  const zoneId = getCurrentZoneIdForInbound()
+  if (zoneId) {
+    query.zoneId = String(zoneId)
+  }
+
   push({
     path: '/warehouse/inbound-request/create',
-    query: { warehouseId: String(warehouseId.value) }
+    query
   })
 }
 
@@ -60,6 +71,12 @@ const showLabels = ref(false)
 const selectedObject = ref<any>(null)
 const filterByCustomer = ref<number | undefined>(undefined)
 const filterByZone = ref<number | undefined>(undefined)
+
+const palletDetailVisible = ref(false)
+const palletDetail = ref<any | null>(null)
+const palletDetailItems = ref<any[]>([])
+const showPalletQr = ref(false)
+const palletQrText = ref('')
 
 // Statistics
 const stats = computed(() => {
@@ -84,14 +101,39 @@ const customers = computed(() => {
   return Array.from(map.entries()).map(([id, name]) => ({ id, name }))
 })
 
+// Helper đọc zoneId từ query ban đầu của route
+const getZoneIdFromQuery = (): number | undefined => {
+  const raw = route.query.zoneId
+  if (!raw) return undefined
+  const n = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return undefined
+  return n
+}
+
+const lockedZoneIdFromQuery = computed(() => getZoneIdFromQuery())
+const isZoneLockedFromQuery = computed(() => !!lockedZoneIdFromQuery.value)
+
 // Zone list for filter
 const zonesForFilter = computed(() => {
   if (!warehouseData.value?.zones) return []
-  return warehouseData.value.zones.map((z) => ({
+  const zones = warehouseData.value.zones
+  const lockedId = lockedZoneIdFromQuery.value
+  const visibleZones = lockedId ? zones.filter((z) => z.zoneId === lockedId) : zones
+  return visibleZones.map((z) => ({
     id: z.zoneId,
     name: z.zoneName || `Zone #${z.zoneId}`
   }))
 })
+
+// Helper lấy zoneId cho màn tạo yêu cầu nhập kho
+// Ưu tiên zone đang được filter trong 3D, nếu không có thì dùng zoneId từ query ban đầu.
+function getCurrentZoneIdForInbound(): number | undefined {
+  const v = filterByZone.value
+  if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+    return v
+  }
+  return getZoneIdFromQuery()
+}
 
 // Load warehouse 3D data
 const loadWarehouse3DData = async () => {
@@ -100,6 +142,12 @@ const loadWarehouse3DData = async () => {
     const res = await warehouseApi.getWarehouse3DData(warehouseId.value)
     if (res.statusCode === 200 || res.code === 0) {
       warehouseData.value = res.data
+
+      const initialZoneId = getZoneIdFromQuery()
+      if (initialZoneId) {
+        filterByZone.value = initialZoneId
+      }
+
       initThreeJS()
       ElMessage.success('Tải dữ liệu kho thành công')
     } else {
@@ -767,6 +815,12 @@ const handleObjectClick = (userData: any) => {
 }
 
 const showZoneDetails = (zone: any) => {
+  const zoneId = Number(zone.zoneId)
+  if (Number.isFinite(zoneId) && zoneId > 0) {
+    filterByZone.value = zoneId
+    applyFilter()
+  }
+
   const itemCount =
     warehouseData.value?.items?.filter((i) => {
       const pallet = warehouseData.value!.pallets?.find((p) => p.palletId === i.palletId)
@@ -869,92 +923,93 @@ const showRackDetails = (rack: any) => {
 const showPalletDetails = (pallet: any) => {
   const items = warehouseData.value?.items?.filter((i) => i.palletId === pallet.palletId) || []
 
-  ElMessageBox.alert(
-    `
-    <div style="line-height: 1.8">
-      <p><strong>Barcode:</strong> ${pallet.barcode}</p>
-      <p><strong>Mã vị trí:</strong> ${pallet.locationCode || 'N/A'}</p>
-      <p><strong>Vị trí:</strong> (${pallet.positionX}, ${pallet.positionY}, ${pallet.positionZ})</p>
-      <p><strong>Kích thước pallet:</strong> ${pallet.palletLength}m × ${pallet.palletWidth}m × ${pallet.palletHeight}m</p>
-      ${
-        items.length > 0
-          ? `<hr/><p><strong>Danh sách hàng trên pallet:</strong></p><ul>${items
-              .map((i) => {
-                const unitSize =
-                  i.standardLength && i.standardWidth && i.standardHeight
-                    ? `${i.standardLength}m × ${i.standardWidth}m × ${i.standardHeight}m`
-                    : 'N/A'
-                const stackSize = `${i.length}m × ${i.width}m × ${i.height}m`
-                const qty = i.unitQuantity ?? null
-                const qtyText = qty != null ? (i.unit ? `${qty} ${i.unit}` : `${qty}`) : 'N/A'
-                const mfg = i.manufacturingDate || 'N/A'
-                const exp = i.expiryDate || 'N/A'
+  palletDetail.value = pallet
+  palletDetailItems.value = items
+  showPalletQr.value = false
 
-                return `
-                  <li style="margin-bottom: 8px;">
-                    <strong>${i.productName || i.itemName || i.qrCode || 'Hàng hóa'}</strong>
-                    ${i.productCode ? `<div>Mã SP: ${i.productCode}</div>` : ''}
-                    ${i.customerName ? `<div>Khách hàng: ${i.customerName}</div>` : ''}
-                    <div>Kích thước thùng (1 đơn vị): ${unitSize}</div>
-                    <div>Kích thước khối hàng trên pallet: ${stackSize}</div>
-                    <div>Số lượng đơn vị trên pallet: ${qtyText}</div>
-                    ${
-                      i.weight || i.standardWeight
-                        ? `<div>Trọng lượng: ${i.weight ? `${i.weight} kg` : ''}${
-                            i.standardWeight
-                              ? `${i.weight ? ' / ' : ''}Chuẩn: ${i.standardWeight} kg`
-                              : ''
-                          }</div>`
-                        : ''
-                    }
-                    <div>Ngày sản xuất: ${mfg}</div>
-                    <div>Hạn sử dụng: ${exp}</div>
-                    ${
-                      i.productDescription
-                        ? `<div>Mô tả sản phẩm: ${i.productDescription}</div>`
-                        : ''
-                    }
-                    ${
-                      i.storageConditions ? `<div>Lưu ý bảo quản: ${i.storageConditions}</div>` : ''
-                    }
-                    ${
-                      i.unitPrice || i.totalAmount
-                        ? `<div>Giá: ${
-                            i.unitPrice != null ? `${i.unitPrice.toLocaleString()} / đơn vị` : ''
-                          }${
-                            i.totalAmount != null
-                              ? `${i.unitPrice != null ? ' – ' : ''}Thành tiền: ${i.totalAmount.toLocaleString()}`
-                              : ''
-                          }</div>`
-                        : ''
-                    }
-                    ${
-                      i.isFragile || i.isHeavy
-                        ? `<div style="margin-top:4px;">${
-                            i.isFragile
-                              ? '<span style="color:#e74c3c; font-weight:600;">⚠ Dễ vỡ</span>'
-                              : ''
-                          }${
-                            i.isHeavy
-                              ? `${i.isFragile ? ' · ' : ''}<span style="color:#8e44ad; font-weight:600;">⚠ Hàng nặng</span>`
-                              : ''
-                          }</div>`
-                        : ''
-                    }
-                  </li>
-                `
-              })
-              .join('')}</ul>`
-          : ''
+  if (pallet.palletQrContent && typeof pallet.palletQrContent === 'string') {
+    palletQrText.value = pallet.palletQrContent
+  } else {
+    const qrLines: string[] = []
+    qrLines.push(`Vị trí: (${pallet.positionX}, ${pallet.positionY}, ${pallet.positionZ})`)
+    qrLines.push(
+      `Kích thước pallet: ${pallet.palletLength}m × ${pallet.palletWidth}m × ${pallet.palletHeight}m`
+    )
+    qrLines.push('------------------')
+    qrLines.push('Danh sách hàng trên pallet:')
+
+    items.forEach((i) => {
+      const unitSize =
+        i.standardLength && i.standardWidth && i.standardHeight
+          ? `${i.standardLength}m × ${i.standardWidth}m × ${i.standardHeight}m`
+          : 'N/A'
+      const stackSize = `${i.length}m × ${i.width}m × ${i.height}m`
+      const qty = i.unitQuantity ?? null
+      const qtyText = qty != null ? (i.unit ? `${qty} ${i.unit}` : `${qty}`) : 'N/A'
+      const mfg = i.manufacturingDate || 'N/A'
+      const exp = i.expiryDate || 'N/A'
+
+      let weightText = ''
+      const hasStdWeight = typeof i.standardWeight === 'number' && !Number.isNaN(i.standardWeight)
+      const hasQty = typeof qty === 'number' && !Number.isNaN(qty)
+
+      if (hasStdWeight && hasQty) {
+        const totalWeight = Number(i.standardWeight) * Number(qty)
+        if (Number.isFinite(totalWeight)) {
+          weightText = `Trọng lượng: ${totalWeight} kg / Chuẩn: ${i.standardWeight} kg`
+        }
+      } else if (i.weight || i.standardWeight) {
+        const parts: string[] = []
+        if (i.weight != null) parts.push(`${i.weight} kg`)
+        if (i.standardWeight != null) parts.push(`Chuẩn: ${i.standardWeight} kg`)
+        weightText = `Trọng lượng: ${parts.join(' / ')}`
       }
-    </div>
-    `,
-    `📦 Chi tiết Pallet`,
-    {
-      dangerouslyUseHTMLString: true,
-      confirmButtonText: 'Đóng'
-    }
-  )
+
+      qrLines.push(`${i.productName || i.itemName || i.qrCode || 'Hàng hóa'}`)
+      if (i.productCode) {
+        qrLines.push(`Mã SP: ${i.productCode}`)
+      }
+      if (i.customerName) {
+        qrLines.push(`Khách hàng: ${i.customerName}`)
+      }
+      qrLines.push(`Kích thước thùng (1 đơn vị): ${unitSize}`)
+      qrLines.push(`Kích thước khối hàng trên pallet: ${stackSize}`)
+      qrLines.push(`Số lượng đơn vị trên pallet: ${qtyText}`)
+      if (weightText) {
+        qrLines.push(weightText)
+      }
+      qrLines.push(`Ngày sản xuất: ${mfg}`)
+      qrLines.push(`Hạn sử dụng: ${exp}`)
+      if (i.productDescription) {
+        qrLines.push(`Mô tả sản phẩm: ${i.productDescription}`)
+      }
+      if (i.storageConditions) {
+        qrLines.push(`Lưu ý bảo quản: ${i.storageConditions}`)
+      }
+      if (i.unitPrice || i.totalAmount) {
+        const unitPriceText = i.unitPrice != null ? i.unitPrice.toLocaleString() : ''
+        const totalAmountText = i.totalAmount != null ? i.totalAmount.toLocaleString() : ''
+        if (unitPriceText && totalAmountText) {
+          qrLines.push(`Giá: ${unitPriceText} / đơn vị – Thành tiền: ${totalAmountText}`)
+        } else if (unitPriceText) {
+          qrLines.push(`Giá: ${unitPriceText} / đơn vị`)
+        } else if (totalAmountText) {
+          qrLines.push(`Thành tiền: ${totalAmountText}`)
+        }
+      }
+      if (i.isFragile) {
+        qrLines.push('⚠ Dễ vỡ')
+      }
+      if (i.isHeavy) {
+        qrLines.push('⚠ Hàng nặng')
+      }
+      qrLines.push('')
+    })
+
+    palletQrText.value = qrLines.join('\n')
+  }
+
+  palletDetailVisible.value = true
 }
 
 const showItemDetails = (item: any) => {
@@ -989,8 +1044,9 @@ const changeViewMode = () => {
 const resetViewMode = () => {
   viewMode.value = ''
   filterByCustomer.value = undefined
-  filterByZone.value = undefined
   showLabels.value = false
+  const lockedId = lockedZoneIdFromQuery.value
+  filterByZone.value = lockedId || undefined
   renderWarehouse()
 }
 
@@ -1133,7 +1189,7 @@ onBeforeUnmount(() => {
               v-model="filterByZone"
               placeholder="Tất cả khu vực"
               size="small"
-              clearable
+              :clearable="!isZoneLockedFromQuery"
               @change="applyFilter"
             >
               <ElOption
@@ -1221,6 +1277,94 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <ElDialog
+      v-model="palletDetailVisible"
+      :title="
+        palletDetail ? `📦 Chi tiết Pallet - ${palletDetail.barcode || ''}` : 'Chi tiết Pallet'
+      "
+      width="720px"
+    >
+      <div v-if="palletDetail" class="pallet-detail-dialog">
+        <div class="pallet-detail-layout">
+          <div class="pallet-detail-left">
+            <div class="pallet-header">
+              <div>
+                <p><strong>Barcode:</strong> {{ palletDetail.barcode }}</p>
+                <p> <strong>Mã vị trí:</strong> {{ palletDetail.locationCode || 'N/A' }} </p>
+                <p>
+                  <strong>Vị trí:</strong>
+                  ({{ palletDetail.positionX }}, {{ palletDetail.positionY }},
+                  {{ palletDetail.positionZ }})
+                </p>
+                <p>
+                  <strong>Kích thước pallet:</strong>
+                  {{ palletDetail.palletLength }}m × {{ palletDetail.palletWidth }}m ×
+                  {{ palletDetail.palletHeight }}m
+                </p>
+              </div>
+              <ElButton
+                size="small"
+                type="primary"
+                plain
+                class="qr-toggle-btn"
+                @click="showPalletQr = !showPalletQr"
+              >
+                <Icon
+                  :icon="showPalletQr ? 'vi-tdesign:chevron-left-s' : 'vi-tdesign:chevron-right-s'"
+                />
+                <span class="qr-toggle-label">QR pallet</span>
+              </ElButton>
+            </div>
+
+            <ElDivider />
+
+            <div v-if="palletDetailItems.length" class="pallet-items">
+              <p><strong>Danh sách hàng trên pallet:</strong></p>
+              <ul>
+                <li v-for="item in palletDetailItems" :key="item.allocationId" class="pallet-item">
+                  <strong>
+                    {{ item.productName || item.itemName || item.qrCode || 'Hàng hóa' }}
+                  </strong>
+                  <div v-if="item.productCode">Mã SP: {{ item.productCode }}</div>
+                  <div v-if="item.customerName">Khách hàng: {{ item.customerName }}</div>
+                  <div>
+                    Kích thước thùng (1 đơn vị):
+                    <span v-if="item.standardLength && item.standardWidth && item.standardHeight">
+                      {{ item.standardLength }}m × {{ item.standardWidth }}m ×
+                      {{ item.standardHeight }}m
+                    </span>
+                    <span v-else>N/A</span>
+                  </div>
+                  <div>
+                    Kích thước khối hàng trên pallet:
+                    {{ item.length }}m × {{ item.width }}m × {{ item.height }}m
+                  </div>
+                  <div>
+                    Số lượng đơn vị trên pallet:
+                    <span v-if="item.unitQuantity != null">
+                      {{ item.unitQuantity }}
+                      <span v-if="item.unit">{{ item.unit }}</span>
+                    </span>
+                    <span v-else>N/A</span>
+                  </div>
+                </li>
+              </ul>
+            </div>
+          </div>
+
+          <transition name="fade">
+            <div v-if="showPalletQr && palletQrText" class="pallet-detail-right">
+              <p class="qr-panel-title"><strong>Mã QR pallet</strong></p>
+              <div class="pallet-qr-code">
+                <Qrcode :text="palletQrText" :width="200" />
+              </div>
+              <p class="qr-panel-hint">Quét mã để xem nhanh thông tin pallet.</p>
+            </div>
+          </transition>
+        </div>
+      </div>
+    </ElDialog>
   </ContentWrap>
 </template>
 
@@ -1344,6 +1488,65 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   cursor: pointer;
+}
+
+.pallet-detail-dialog {
+  .pallet-detail-layout {
+    display: flex;
+    gap: 16px;
+  }
+
+  .pallet-detail-left {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .pallet-detail-right {
+    display: flex;
+    padding-left: 16px;
+    border-left: 1px solid #ebeef5;
+    flex: 0 0 240px;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .pallet-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .qr-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .qr-toggle-label {
+    margin-left: 4px;
+  }
+
+  .pallet-items {
+    max-height: 220px;
+    overflow-y: auto;
+
+    .pallet-item {
+      margin-bottom: 8px;
+    }
+  }
+
+  .pallet-qr-code {
+    display: flex;
+    margin-top: 8px;
+    margin-bottom: 8px;
+    justify-content: center;
+  }
+
+  .qr-panel-hint {
+    font-size: 12px;
+    color: #909399;
+    text-align: center;
+  }
 }
 
 .info-overlay {

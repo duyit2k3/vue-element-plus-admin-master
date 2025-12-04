@@ -17,6 +17,7 @@ import warehouseApi, { type WarehouseListItem } from '@/api/warehouse'
 import inboundApi, { type InboundRequestListItem } from '@/api/inbound'
 import { useUserStore } from '@/store/modules/user'
 import { useRoute, useRouter } from 'vue-router'
+import { PATH_URL } from '@/axios/service'
 
 const userStore = useUserStore()
 const route = useRoute()
@@ -113,6 +114,26 @@ const approveInboundRequest = (row: InboundRequestListItem) => {
       warehouseId: selectedWarehouseId.value ? String(selectedWarehouseId.value) : undefined
     }
   })
+}
+
+const viewInboundReceipt = (row: InboundRequestListItem) => {
+  if (!row.receiptNumber || !row.customerId) {
+    ElMessage.warning('Thiếu thông tin phiếu nhập để mở file')
+    return
+  }
+
+  const fileName = `${row.receiptNumber}.pdf`
+  const apiBase = PATH_URL || ''
+  let origin = window.location.origin
+  try {
+    const u = new URL(apiBase, window.location.origin)
+    origin = u.origin
+  } catch {
+    // fallback: keep window.location.origin
+  }
+
+  const url = `${origin.replace(/\/$/, '')}/inbound/${row.customerId}/${fileName}`
+  window.open(url, '_blank')
 }
 
 const handleReject = async (row: InboundRequestListItem) => {
@@ -225,7 +246,7 @@ onMounted(() => {
         </div>
       </template>
       <ElForm label-width="140px">
-        <ElFormItem label="Kho">
+        <ElFormItem label="Kho đã thuê">
           <ElSelect
             v-model="selectedWarehouseKey"
             placeholder="Chọn kho đã thuê"
@@ -322,6 +343,21 @@ onMounted(() => {
           </template>
         </ElTableColumn>
         <ElTableColumn prop="createdByName" label="Người tạo" min-width="180" />
+        <ElTableColumn label="Phiếu nhập" width="160">
+          <template #default="{ row }">
+            <ElButton
+              v-if="row.status && row.status.toLowerCase() === 'completed'"
+              type="primary"
+              text
+              size="small"
+              @click="viewInboundReceipt(row)"
+            >
+              <Icon icon="vi-ant-design:file-pdf-outlined" />
+              Xem phiếu nhập
+            </ElButton>
+            <span v-else class="text-gray">—</span>
+          </template>
+        </ElTableColumn>
         <ElTableColumn v-if="isWarehouseOwner" label="Thao tác" width="220">
           <template #default="{ row }">
             <ElButton

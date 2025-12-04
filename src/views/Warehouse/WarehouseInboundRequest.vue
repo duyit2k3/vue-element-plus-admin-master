@@ -43,6 +43,22 @@ import { useRoute } from 'vue-router'
 const userStore = useUserStore()
 const route = useRoute()
 
+const queryWarehouseId = computed(() => {
+  const raw = route.query.warehouseId
+  if (!raw) return undefined
+  const n = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+})
+
+const queryZoneId = computed(() => {
+  const raw = route.query.zoneId
+  if (!raw) return undefined
+  const n = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+})
+
+const isZoneLockedFromQuery = computed(() => !!queryZoneId.value)
+
 // Warehouse
 const warehouses = ref<WarehouseListItem[]>([])
 const selectedWarehouseId = ref<number | undefined>(undefined)
@@ -72,9 +88,27 @@ const loadWarehouses = async () => {
       warehouses.value = (res.data || []) as WarehouseListItem[]
 
       if (!selectedWarehouseKey.value && warehouses.value.length > 0) {
-        const qId = route.query.warehouseId ? Number(route.query.warehouseId) : undefined
-        const matched = qId ? warehouses.value.find((w) => w.warehouseId === qId) : undefined
-        const first = matched ?? warehouses.value[0]
+        const qWarehouseId = queryWarehouseId.value
+        const qZoneId = queryZoneId.value
+
+        let first: WarehouseListItem | undefined
+
+        if (qWarehouseId && Number.isFinite(qWarehouseId)) {
+          const byWarehouse = warehouses.value.filter((w) => w.warehouseId === qWarehouseId)
+          if (byWarehouse.length > 0) {
+            if (qZoneId && Number.isFinite(qZoneId)) {
+              first =
+                byWarehouse.find((w) => w.zoneId != null && w.zoneId === qZoneId) || byWarehouse[0]
+            } else {
+              first = byWarehouse[0]
+            }
+          }
+        }
+
+        if (!first) {
+          first = warehouses.value[0]
+        }
+
         selectedWarehouseKey.value = `${first.warehouseId}:${first.zoneId ?? 0}`
       }
     }
@@ -84,6 +118,27 @@ const loadWarehouses = async () => {
     loadingWarehouses.value = false
   }
 }
+
+const visibleWarehouses = computed(() => {
+  const list = warehouses.value
+  const zid = queryZoneId.value
+  const wid = queryWarehouseId.value
+
+  if (zid) {
+    const filtered = list.filter((w) => {
+      if (w.zoneId == null) return false
+      if (w.zoneId !== zid) return false
+      if (wid && w.warehouseId !== wid) return false
+      return true
+    })
+
+    if (filtered.length > 0) {
+      return filtered
+    }
+  }
+
+  return list
+})
 
 const loadInboundRequests = async () => {
   loadingInboundRequests.value = true
@@ -843,10 +898,10 @@ onMounted(() => {
             placeholder="Chọn kho đã thuê"
             :loading="loadingWarehouses"
             filterable
-            clearable
+            :clearable="!isZoneLockedFromQuery"
           >
             <ElOption
-              v-for="w in warehouses"
+              v-for="w in visibleWarehouses"
               :key="w.zoneId ?? w.warehouseId"
               :label="
                 w.zoneName

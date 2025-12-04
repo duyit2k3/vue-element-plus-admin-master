@@ -69,7 +69,15 @@ const goToWarehouse = (warehouse: WarehouseListItem) => {
 }
 
 const goTo3DView = (warehouse: WarehouseListItem) => {
-  push(`/warehouse/${warehouse.warehouseId}/3d-view`)
+  const query: any = {}
+  if (userRole.value === 'customer' && warehouse.zoneId) {
+    query.zoneId = String(warehouse.zoneId)
+  }
+
+  push({
+    path: `/warehouse/${warehouse.warehouseId}/3d-view`,
+    query
+  })
 }
 
 onMounted(() => {
