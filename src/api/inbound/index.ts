@@ -210,6 +210,12 @@ const inboundApi = {
       data
     })
   },
+  previewApproveInboundLayout: (receiptId: number, data?: ApproveInboundLayoutRequest) => {
+    return request.post<InboundOptimizeLayoutView>({
+      url: `/Inbound/${receiptId}/preview-approve-layout`,
+      data
+    })
+  },
   saveManualStackLayout: (receiptId: number, data: ManualStackLayoutRequest) => {
     return request.put({ url: `/Inbound/${receiptId}/manual-stack-layout`, data })
   }

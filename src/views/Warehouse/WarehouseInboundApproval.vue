@@ -820,7 +820,7 @@ const handleOptimize = async () => {
       ? { preferredLayouts: layouts, forceUsePreferredLayout: true }
       : { forceUsePreferredLayout: true }
 
-    const res = await inboundApi.optimizeInboundLayout(receiptId.value, payload)
+    const res = await inboundApi.previewApproveInboundLayout(receiptId.value, payload)
     if (res.statusCode === 200 || res.code === 0) {
       optimizeResult.value = res.data
       if (layouts.length) {
