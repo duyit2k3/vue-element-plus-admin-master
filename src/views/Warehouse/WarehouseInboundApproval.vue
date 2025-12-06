@@ -854,9 +854,19 @@ const handleApprove = async () => {
         ElMessage.error(saveRes.message || 'Không thể lưu layout xếp hàng thủ công')
         return
       }
+
+      // Lưu layout chi tiết vào sessionStorage để màn 3D có thể vẽ đúng stack units inbound
+      if (typeof window !== 'undefined') {
+        try {
+          const key = `inboundManualLayouts:${receiptId.value}`
+          const snapshot = manualLayouts.value
+          window.sessionStorage.setItem(key, JSON.stringify(snapshot))
+        } catch {
+          // Bỏ qua lỗi lưu session, không chặn luồng duyệt 3D
+        }
+      }
     }
 
-    // Nếu đã có layout tối ưu gần nhất thì ưu tiên dùng, ngược lại lấy từ vị trí kéo thả hiện tại
     let layouts: PreferredPalletLayout[] = []
 
     if (lastPreferredLayouts.value && lastPreferredLayouts.value.length) {
@@ -871,19 +881,44 @@ const handleApprove = async () => {
       }
     }
 
-    const payload = layouts.length
+    const previewPayload = layouts.length
       ? { preferredLayouts: layouts, forceUsePreferredLayout: true }
-      : undefined
+      : { forceUsePreferredLayout: true }
 
-    const res = await inboundApi.approveInboundRequest(receiptId.value, payload)
-    if (res.statusCode === 200 || res.code === 0) {
-      ElMessage.success('Duyệt yêu cầu nhập kho thành công')
-      router.push({
-        path: `/warehouse/${approvalData.value.warehouseId}/3d-view`
-      })
-    } else {
-      ElMessage.error(res.message || 'Không thể duyệt yêu cầu')
+    const previewRes = await inboundApi.previewApproveInboundLayout(receiptId.value, previewPayload)
+    if (
+      !(previewRes.statusCode === 200 || previewRes.code === 0) ||
+      !previewRes.data?.layouts?.length
+    ) {
+      ElMessage.error(previewRes.message || 'Không tìm được layout phù hợp để xem 3D')
+      return
     }
+
+    optimizeResult.value = previewRes.data
+    if (layouts.length) {
+      lastPreferredLayouts.value = layouts
+    }
+
+    let zoneIdToView: number | undefined = approvalData.value.zoneId ?? undefined
+    if (!zoneIdToView) {
+      const firstLayout = previewRes.data.layouts[0]
+      if (firstLayout && typeof firstLayout.zoneId === 'number') {
+        zoneIdToView = firstLayout.zoneId
+      }
+    }
+
+    const query: Record<string, string> = {
+      mode: 'inbound-approval',
+      receiptId: String(receiptId.value)
+    }
+    if (zoneIdToView) {
+      query.zoneId = String(zoneIdToView)
+    }
+
+    router.push({
+      path: `/warehouse/${approvalData.value.warehouseId}/3d-view`,
+      query
+    })
   } catch (e) {
     ElMessage.error('Lỗi khi duyệt yêu cầu')
   } finally {

@@ -110,6 +110,9 @@ export interface InboundApprovalItem {
   palletWidth: number
   palletHeight: number
   isBag: boolean
+  // Layout chi tiết các đơn vị hàng trên pallet (nếu có), lấy từ InboundItemStackUnits.
+  // Dùng cho viewer 2D/3D để vẽ đúng cách xếp.
+  stackUnits?: import('@/api/warehouse').ItemStackUnit[] | null
 }
 
 export interface InboundApprovalView {
