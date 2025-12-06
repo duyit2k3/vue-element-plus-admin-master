@@ -907,17 +907,18 @@ const handleApprove = async () => {
       }
     }
 
-    const query: Record<string, string> = {
-      mode: 'inbound-approval',
-      receiptId: String(receiptId.value)
-    }
-    if (zoneIdToView) {
-      query.zoneId = String(zoneIdToView)
+    if (!zoneIdToView) {
+      ElMessage.error('Không xác định được zone để xem 3D')
+      return
     }
 
     router.push({
-      path: `/warehouse/${approvalData.value.warehouseId}/3d-view`,
-      query
+      name: 'WarehouseInbound3DApproval',
+      params: {
+        id: approvalData.value.warehouseId,
+        receiptId: receiptId.value,
+        zoneId: zoneIdToView
+      }
     })
   } catch (e) {
     ElMessage.error('Lỗi khi duyệt yêu cầu')

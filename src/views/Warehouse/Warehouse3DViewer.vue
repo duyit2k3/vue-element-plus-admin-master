@@ -37,13 +37,27 @@ const container = ref<HTMLDivElement>()
 const userStore = useUserStore()
 
 // Inbound approval (preview) mode
-const inboundMode = computed(() => route.query.mode === 'inbound-approval')
+// Bật khi:
+// - Route mới: WarehouseInbound3DApproval (/warehouse/:id/inbound-3d-approval/:receiptId/:zoneId)
+// - Hoặc route cũ dùng query mode=inbound-approval
+const inboundMode = computed(() => {
+  if (route.name === 'WarehouseInbound3DApproval') return true
+  return route.query.mode === 'inbound-approval'
+})
+
+// receiptId ưu tiên lấy từ params, fallback query
 const inboundReceiptId = computed(() => {
+  const fromParams = route.params.receiptId
+  if (fromParams != null) {
+    const n = Array.isArray(fromParams) ? Number(fromParams[0]) : Number(fromParams)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+
   const raw = route.query.receiptId
   if (!raw) return undefined
-  const n = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
-  if (!Number.isFinite(n) || n <= 0) return undefined
-  return n
+  const n2 = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
+  if (!Number.isFinite(n2) || n2 <= 0) return undefined
+  return n2
 })
 const inboundPreviewResult = ref<InboundOptimizeLayoutView | null>(null)
 
@@ -319,7 +333,20 @@ const hasShelfCollision = (
 }
 
 const goToViewInbound = () => {
-  push({ path: '/warehouse/inbound-request', query: { warehouseId: String(warehouseId.value) } })
+  push({
+    path: '/warehouse/inbound-request',
+    query: { warehouseId: String(warehouseId.value) }
+  })
+}
+
+// Quay lại: nếu đang ở màn duyệt inbound 3D thì quay về màn duyệt yêu cầu nhập kho,
+// ngược lại quay về chi tiết kho như cũ
+const goBackFrom3D = () => {
+  if (inboundMode.value && inboundReceiptId.value) {
+    push({ path: `/warehouse/inbound-request/${inboundReceiptId.value}/approval` })
+  } else {
+    push(`/warehouse/${warehouseId.value}/detail`)
+  }
 }
 
 // 3D Scene variables
@@ -352,17 +379,6 @@ const palletDetailItems = ref<any[]>([])
 const showPalletQr = ref(false)
 const palletQrText = ref('')
 
-// Statistics
-const stats = computed(() => {
-  if (!warehouseData.value) return null
-  return {
-    totalZones: warehouseData.value.zones?.length || 0,
-    totalPallets: warehouseData.value.pallets?.length || 0,
-    totalItems: warehouseData.value.items?.length || 0,
-    totalRacks: warehouseData.value.racks?.length || 0
-  }
-})
-
 // Customer list
 const customers = computed(() => {
   if (!warehouseData.value?.zones) return []
@@ -375,13 +391,20 @@ const customers = computed(() => {
   return Array.from(map.entries()).map(([id, name]) => ({ id, name }))
 })
 
-// Helper đọc zoneId từ query ban đầu của route
+// Helper đọc zoneId từ query/params ban đầu của route
 const getZoneIdFromQuery = (): number | undefined => {
+  // Ưu tiên params.zoneId (route mới inbound-3d-approval)
+  const fromParams = route.params.zoneId
+  if (fromParams != null) {
+    const n = Array.isArray(fromParams) ? Number(fromParams[0]) : Number(fromParams)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+
   const raw = route.query.zoneId
   if (!raw) return undefined
-  const n = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
-  if (!Number.isFinite(n) || n <= 0) return undefined
-  return n
+  const n2 = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
+  if (!Number.isFinite(n2) || n2 <= 0) return undefined
+  return n2
 }
 
 const lockedZoneIdFromQuery = computed(() => getZoneIdFromQuery())
@@ -463,7 +486,25 @@ const loadWarehouse3DData = async () => {
             try {
               const approvalRes = await inboundApi.getInboundApprovalView(inboundReceiptId.value)
               if (approvalRes.statusCode === 200 || approvalRes.code === 0) {
-                inboundApprovalView.value = approvalRes.data
+                const view = approvalRes.data
+
+                // Đảm bảo receiptId thuộc đúng warehouse/id và (nếu có) đúng zoneId
+                const currentWarehouseId = warehouseId.value
+                const currentZoneId = getZoneIdFromQuery()
+
+                if (view.warehouseId !== currentWarehouseId) {
+                  ElMessage.error('Phiếu inbound không thuộc kho hiện tại')
+                  goBackFrom3D()
+                  return
+                }
+
+                if (currentZoneId && view.zoneId && view.zoneId !== currentZoneId) {
+                  ElMessage.error('Phiếu inbound không thuộc khu vực hiện tại')
+                  goBackFrom3D()
+                  return
+                }
+
+                inboundApprovalView.value = view
               }
             } catch {
               // Bỏ qua lỗi, chỉ mất overlay chi tiết hàng inbound
@@ -2137,65 +2178,41 @@ onBeforeUnmount(() => {
 <template>
   <ContentWrap :title="`Xem Kho 3D - ${warehouseData?.warehouseName || 'Loading...'}`">
     <template #header>
-      <ElButton type="primary" @click="push(`/warehouse/${warehouseId}/detail`)">
-        <Icon icon="vi-ant-design:arrow-left-outlined" />
-        Quay Lại
-      </ElButton>
-      <ElButton type="success" v-if="inboundMode" @click="handleApproveInboundFrom3D">
-        <Icon icon="vi-ant-design:check-circle-outlined" />
-        Duyệt inbound tại zone
-      </ElButton>
-      <ElButton type="info" @click="push(`/warehouse/${warehouseId}/items`)">
-        <Icon icon="vi-ant-design:inbox-outlined" />
-        Hàng Hóa
-      </ElButton>
-      <ElButton type="warning" @click="push(`/warehouse/${warehouseId}/zones`)">
-        <Icon icon="vi-ant-design:layout-outlined" />
-        Khu Vực
-      </ElButton>
-      <ElButton v-if="canCreateInbound" type="primary" @click="goToCreateInbound">
-        <Icon icon="vi-ant-design:plus-square-outlined" />
-        Thêm Yêu Cầu Nhập Kho
-      </ElButton>
-      <ElButton v-if="canViewInbound" @click="goToViewInbound">
-        <Icon icon="vi-ant-design:unordered-list-outlined" />
-        Xem Yêu Cầu Nhập Kho
-      </ElButton>
+      <template v-if="inboundMode">
+        <ElButton type="primary" @click="goBackFrom3D">
+          <Icon icon="vi-ant-design:arrow-left-outlined" />
+          Quay Lại
+        </ElButton>
+        <ElButton v-if="canViewInbound" @click="goToViewInbound">
+          <Icon icon="vi-ant-design:unordered-list-outlined" />
+          Xem Yêu Cầu Nhập Kho
+        </ElButton>
+      </template>
+      <template v-else>
+        <ElButton type="primary" @click="goBackFrom3D">
+          <Icon icon="vi-ant-design:arrow-left-outlined" />
+          Quay Lại
+        </ElButton>
+        <ElButton type="info" @click="push(`/warehouse/${warehouseId}/items`)">
+          <Icon icon="vi-ant-design:inbox-outlined" />
+          Hàng Hóa
+        </ElButton>
+        <ElButton type="warning" @click="push(`/warehouse/${warehouseId}/zones`)">
+          <Icon icon="vi-ant-design:layout-outlined" />
+          Khu Vực
+        </ElButton>
+        <ElButton v-if="canCreateInbound" type="primary" @click="goToCreateInbound">
+          <Icon icon="vi-ant-design:plus-square-outlined" />
+          Thêm Yêu Cầu Nhập Kho
+        </ElButton>
+        <ElButton v-if="canViewInbound" @click="goToViewInbound">
+          <Icon icon="vi-ant-design:unordered-list-outlined" />
+          Xem Yêu Cầu Nhập Kho
+        </ElButton>
+      </template>
     </template>
 
     <div class="warehouse-3d-viewer">
-      <!-- Stats Bar -->
-      <div v-if="stats" class="stats-bar">
-        <div class="stat-item">
-          <Icon icon="vi-ant-design:layout-outlined" class="stat-icon" />
-          <div>
-            <div class="stat-value">{{ stats.totalZones }}</div>
-            <div class="stat-label">Khu vực</div>
-          </div>
-        </div>
-        <div class="stat-item">
-          <Icon icon="vi-ant-design:appstore-outlined" class="stat-icon" />
-          <div>
-            <div class="stat-value">{{ stats.totalRacks }}</div>
-            <div class="stat-label">Số kệ (racks)</div>
-          </div>
-        </div>
-        <div class="stat-item">
-          <Icon icon="vi-ant-design:inbox-outlined" class="stat-icon" />
-          <div>
-            <div class="stat-value">{{ stats.totalPallets }}</div>
-            <div class="stat-label">Pallets</div>
-          </div>
-        </div>
-        <div class="stat-item highlight">
-          <Icon icon="vi-ant-design:database-outlined" class="stat-icon" />
-          <div>
-            <div class="stat-value">{{ stats.totalItems }}</div>
-            <div class="stat-label">Tổng hàng hóa</div>
-          </div>
-        </div>
-      </div>
-
       <!-- Main Content -->
       <div class="main-content">
         <!-- Control Panel -->
@@ -2220,59 +2237,63 @@ onBeforeUnmount(() => {
 
           <ElDivider />
 
-          <div class="control-section">
-            <h4>Lọc khách hàng</h4>
-            <ElSelect
-              v-model="filterByCustomer"
-              placeholder="Tất cả"
-              size="small"
-              clearable
-              @change="applyFilter"
-            >
-              <ElOption
-                v-for="customer in customers"
-                :key="customer.id"
-                :label="customer.name"
-                :value="customer.id"
-              />
-            </ElSelect>
-          </div>
+          <template v-if="!inboundMode">
+            <div class="control-section">
+              <h4>Lọc khách hàng</h4>
+              <ElSelect
+                v-model="filterByCustomer"
+                placeholder="Tất cả"
+                size="small"
+                clearable
+                @change="applyFilter"
+              >
+                <ElOption
+                  v-for="customer in customers"
+                  :key="customer.id"
+                  :label="customer.name"
+                  :value="customer.id"
+                />
+              </ElSelect>
+            </div>
 
-          <div class="control-section">
-            <h4>Lọc theo khu vực (zone)</h4>
-            <ElSelect
-              v-model="filterByZone"
-              placeholder="Tất cả khu vực"
-              size="small"
-              :clearable="!isZoneLockedFromQuery"
-              @change="applyFilter"
-            >
-              <ElOption
-                v-for="zone in zonesForFilter"
-                :key="zone.id"
-                :label="zone.name"
-                :value="zone.id"
-              />
-            </ElSelect>
-          </div>
+            <div class="control-section">
+              <h4>Lọc theo khu vực (zone)</h4>
+              <ElSelect
+                v-model="filterByZone"
+                placeholder="Tất cả khu vực"
+                size="small"
+                :clearable="!isZoneLockedFromQuery"
+                @change="applyFilter"
+              >
+                <ElOption
+                  v-for="zone in zonesForFilter"
+                  :key="zone.id"
+                  :label="zone.name"
+                  :value="zone.id"
+                />
+              </ElSelect>
+            </div>
 
-          <ElDivider />
+            <ElDivider />
+          </template>
 
           <div class="control-section">
             <h4>Hiển thị</h4>
             <ElCheckbox v-model="showGrid" @change="toggleGrid">Lưới nền</ElCheckbox>
             <ElCheckbox v-model="showLabels" @change="renderWarehouse">Nhãn</ElCheckbox>
-          </div>
 
-          <ElDivider />
-
-          <div class="control-section">
-            <ElButton size="small" style="width: 100%" @click="resetCamera">
+            <ElButton
+              size="small"
+              class="no-margin-left-btn"
+              style="width: 100%; margin-top: 10px"
+              @click="resetCamera"
+            >
               <Icon icon="vi-ep:view" />
               Reset Camera
             </ElButton>
             <ElButton
               size="small"
+              class="no-margin-left-btn"
               style="width: 100%; margin-top: 10px"
               type="primary"
               @click="loadWarehouse3DData"
@@ -2280,31 +2301,6 @@ onBeforeUnmount(() => {
             >
               <Icon icon="vi-ep:refresh" />
               Làm mới
-            </ElButton>
-          </div>
-
-          <ElDivider v-if="inboundMode" />
-
-          <div v-if="inboundMode" class="control-section">
-            <h4>Điều chỉnh pallet inbound</h4>
-            <ElButton
-              size="small"
-              style="width: 100%; margin-bottom: 8px"
-              type="primary"
-              @click="moveSelectedInboundPalletToGround"
-            >
-              <Icon icon="vi-ant-design:arrow-down-outlined" />
-              Đưa pallet xuống đất
-            </ElButton>
-            <ElButton
-              size="small"
-              style="width: 100%"
-              type="primary"
-              plain
-              @click="moveSelectedInboundPalletToNearestShelf"
-            >
-              <Icon icon="vi-ant-design:arrow-up-outlined" />
-              Đưa pallet lên tầng gần nhất
             </ElButton>
           </div>
 
@@ -2345,6 +2341,41 @@ onBeforeUnmount(() => {
         <!-- 3D Canvas -->
         <div class="canvas-wrapper">
           <div v-loading="loading" ref="container" class="canvas-container"></div>
+
+          <!-- Inbound actions inside 3D frame -->
+          <div v-if="inboundMode" class="inbound-actions-overlay">
+            <ElButton
+              size="small"
+              type="success"
+              class="no-margin-left-btn"
+              style="width: 100%; margin-bottom: 8px"
+              @click="handleApproveInboundFrom3D"
+            >
+              <Icon icon="vi-ant-design:check-circle-outlined" />
+              Duyệt inbound tại zone
+            </ElButton>
+            <ElButton
+              size="small"
+              type="primary"
+              class="no-margin-left-btn"
+              style="width: 100%; margin-bottom: 8px"
+              @click="moveSelectedInboundPalletToGround"
+            >
+              <Icon icon="vi-ant-design:arrow-down-outlined" />
+              Đưa pallet xuống đất
+            </ElButton>
+            <ElButton
+              size="small"
+              type="primary"
+              plain
+              class="no-margin-left-btn"
+              style="width: 100%"
+              @click="moveSelectedInboundPalletToNearestShelf"
+            >
+              <Icon icon="vi-ant-design:arrow-up-outlined" />
+              Đưa pallet lên tầng gần nhất
+            </ElButton>
+          </div>
 
           <!-- Help Text -->
           <div class="help-text">
@@ -2456,53 +2487,15 @@ onBeforeUnmount(() => {
   min-height: 600px;
 }
 
-.stats-bar {
-  display: flex;
-  padding: 15px;
-  margin-bottom: 15px;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 10%);
-  gap: 15px;
-
-  .stat-item {
-    display: flex;
-    padding: 15px;
-    color: white;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    border-radius: 8px;
-    flex: 1;
-    align-items: center;
-    gap: 12px;
-
-    &.highlight {
-      background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-    }
-
-    .stat-icon {
-      font-size: 32px;
-      opacity: 0.9;
-    }
-
-    .stat-value {
-      margin-bottom: 5px;
-      font-size: 24px;
-      font-weight: bold;
-      line-height: 1;
-    }
-
-    .stat-label {
-      font-size: 12px;
-      opacity: 0.85;
-    }
-  }
-}
-
 .main-content {
   flex: 1;
   display: flex;
   gap: 15px;
   overflow: hidden;
+}
+
+.no-margin-left-btn {
+  margin-left: 0 !important;
 }
 
 .control-panel {
@@ -2568,6 +2561,22 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   cursor: pointer;
+}
+
+.inbound-actions-overlay {
+  position: absolute;
+  bottom: 130px; // nằm ngay phía trên khối hướng dẫn (help-text)
+  left: 20px;
+  z-index: 12;
+  display: flex;
+  max-width: 260px;
+  min-width: 220px;
+  padding: 10px 12px;
+  background: rgb(255 255 255 / 96%);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 15%);
+  flex-direction: column;
+  gap: 8px;
 }
 
 .pallet-detail-dialog {

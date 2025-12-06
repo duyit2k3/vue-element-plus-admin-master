@@ -26,7 +26,7 @@ router.beforeEach(async (to, from, next) => {
       if (userRole === 'warehouse_owner' || userRole === 'customer') {
         next({ path: '/warehouse/overview' })
       } else {
-        next({ path: '/dashboard/analysis' })
+        next({ path: '/warehouse/overview' })
       }
     } else {
       // Kiểm tra nếu route not found và cần regenerate

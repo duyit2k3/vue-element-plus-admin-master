@@ -11,7 +11,7 @@ export const constantRouterMap: AppRouteRecordRaw[] = [
   {
     path: '/',
     component: Layout,
-    redirect: '/dashboard/analysis',
+    redirect: '/warehouse/overview',
     name: 'Root',
     meta: {
       hidden: true
@@ -83,7 +83,7 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
   {
     path: '/dashboard',
     component: Layout,
-    redirect: '/dashboard/analysis',
+    redirect: '/warehouse/overview',
     name: 'Dashboard',
     meta: {
       title: t('router.dashboard'),
@@ -92,16 +92,6 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
       hidden: true
     },
     children: [
-      {
-        path: 'analysis',
-        component: () => import('@/views/Dashboard/Analysis.vue'),
-        name: 'Analysis',
-        meta: {
-          title: t('router.analysis'),
-          noCache: true,
-          affix: true
-        }
-      },
       {
         path: 'workplace',
         component: () => import('@/views/Dashboard/Workplace.vue'),
@@ -714,6 +704,19 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
         }
       },
       {
+        path: ':id/inbound-3d-approval/:receiptId/:zoneId',
+        component: () => import('@/views/Warehouse/Warehouse3DViewer.vue'),
+        name: 'WarehouseInbound3DApproval',
+        meta: {
+          title: 'Duyệt Inbound 3D',
+          icon: 'vi-ant-design:deployment-unit-outlined',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/inbound-request'
+        }
+      },
+      {
         path: ':id/items',
         component: () => import('@/views/Warehouse/WarehouseItems.vue'),
         name: 'WarehouseItems',
@@ -750,16 +753,6 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
           hidden: true,
           canTo: true,
           activeMenu: '/warehouse/list'
-        }
-      },
-      {
-        path: 'reports',
-        component: () => import('@/views/Warehouse/WarehouseReports.vue'),
-        name: 'WarehouseReports',
-        meta: {
-          title: 'Báo Cáo',
-          icon: 'vi-ant-design:file-text-outlined',
-          noCache: false
         }
       },
       {

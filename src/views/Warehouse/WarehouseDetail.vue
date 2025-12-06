@@ -205,10 +205,6 @@ onMounted(() => {
               <Icon icon="vi-ant-design:layout-outlined" />
               Quản Lý Khu Vực
             </ElButton>
-            <ElButton v-if="canManageWarehouse" type="info" @click="push('/warehouse/reports')">
-              <Icon icon="vi-ant-design:file-text-outlined" />
-              Xem Báo Cáo
-            </ElButton>
             <ElButton v-if="canCreateInbound" type="primary" @click="goToCreateInbound">
               <Icon icon="vi-ant-design:plus-square-outlined" />
               Thêm Yêu Cầu Nhập Kho
