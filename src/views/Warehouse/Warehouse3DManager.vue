@@ -9,7 +9,6 @@ import {
   ElRadioGroup,
   ElRadioButton,
   ElDivider,
-  ElCheckbox,
   ElMessage,
   ElMessageBox
 } from 'element-plus'
@@ -37,7 +36,7 @@ let mouse: THREE.Vector2
 const viewMode = ref<'overview' | 'zones' | 'items'>('overview')
 const selectedZone = ref<any>(null)
 const selectedItem = ref<any>(null)
-const showGrid = ref(true)
+const showGrid = ref(false)
 const showLabels = ref(true)
 const filterByCustomer = ref<number | undefined>(undefined)
 
@@ -442,14 +441,6 @@ const changeViewMode = (mode: 'overview' | 'zones' | 'items') => {
   renderWarehouse()
 }
 
-const toggleGrid = () => {
-  showGrid.value = !showGrid.value
-  const grid = scene.getObjectByName('gridHelper')
-  if (grid) {
-    grid.visible = showGrid.value
-  }
-}
-
 const resetCamera = () => {
   camera.position.set(30, 30, 30)
   camera.lookAt(0, 0, 0)
@@ -552,12 +543,6 @@ onBeforeUnmount(() => {
           </div>
 
           <el-divider />
-
-          <div class="control-section">
-            <h4>Hiển thị</h4>
-            <el-checkbox v-model="showGrid" @change="toggleGrid">Lưới nền</el-checkbox>
-            <el-checkbox v-model="showLabels" @change="renderWarehouse">Nhãn</el-checkbox>
-          </div>
 
           <el-divider />
 

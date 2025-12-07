@@ -69,6 +69,40 @@ const receiptId = ref<number | null>(null)
 
 const isManualMode = computed(() => approvalData.value?.stackMode?.toLowerCase() === 'manual')
 
+const getUnitAabbForManual = (
+  centerX: number,
+  centerZ: number,
+  length: number,
+  width: number,
+  rotationY: number
+) => {
+  const halfL = length / 2
+  const halfW = width / 2
+  const angle = rotationY || 0
+
+  if (Math.abs(angle) < 1e-6) {
+    return {
+      minX: centerX - halfL,
+      maxX: centerX + halfL,
+      minZ: centerZ - halfW,
+      maxZ: centerZ + halfW
+    }
+  }
+
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+
+  const extentX = Math.abs(halfL * cos) + Math.abs(halfW * sin)
+  const extentZ = Math.abs(halfL * sin) + Math.abs(halfW * cos)
+
+  return {
+    minX: centerX - extentX,
+    maxX: centerX + extentX,
+    minZ: centerZ - extentZ,
+    maxZ: centerZ + extentZ
+  }
+}
+
 const currentBlockDims = computed(() => {
   const item = selectedItem.value
   if (!item) {
@@ -86,18 +120,12 @@ const currentBlockDims = computed(() => {
     const palletHeight = item.palletHeight
 
     for (const u of units) {
-      const halfL = u.length / 2
-      const halfW = u.width / 2
+      const aabb = getUnitAabbForManual(u.localX, u.localZ, u.length, u.width, u.rotationY || 0)
 
-      const minUx = u.localX - halfL
-      const maxUx = u.localX + halfL
-      const minUz = u.localZ - halfW
-      const maxUz = u.localZ + halfW
-
-      if (minUx < minX) minX = minUx
-      if (maxUx > maxX) maxX = maxUx
-      if (minUz < minZ) minZ = minUz
-      if (maxUz > maxZ) maxZ = maxUz
+      if (aabb.minX < minX) minX = aabb.minX
+      if (aabb.maxX > maxX) maxX = aabb.maxX
+      if (aabb.minZ < minZ) minZ = aabb.minZ
+      if (aabb.maxZ > maxZ) maxZ = aabb.maxZ
 
       const top = u.localY + u.height / 2
       if (top > maxTop) maxTop = top
@@ -140,6 +168,47 @@ const loadApprovalData = async () => {
     const res = await inboundApi.getInboundApprovalView(receiptId.value)
     if (res.statusCode === 200 || res.code === 0) {
       approvalData.value = res.data
+
+      // Khởi tạo layout chi tiết từ StackUnits backend (nếu có) để đảm bảo
+      // layout hiển thị ở màn duyệt (/warehouse/inbound-request/:id/approval)
+      // khớp với layout dùng cho 3D inbound-approval.
+      const layouts: Record<number, ManualStackUnitRequest[]> = {}
+      const confirmed: Record<number, boolean> = {}
+
+      for (const it of res.data.items || []) {
+        const stackUnits: any[] = Array.isArray((it as any).stackUnits)
+          ? ((it as any).stackUnits as any[])
+          : []
+
+        if (!stackUnits.length) continue
+
+        layouts[it.inboundItemId] = stackUnits.map((u: any, index: number) => {
+          const length = Number(u.length ?? it.unitLength ?? it.itemLength ?? 0) || 0
+          const width = Number(u.width ?? it.unitWidth ?? it.itemWidth ?? 0) || 0
+          const height = Number(u.height ?? it.unitHeight ?? it.itemHeight ?? 0) || 0
+
+          return {
+            unitIndex:
+              typeof u.unitIndex === 'number' && Number.isFinite(u.unitIndex) ? u.unitIndex : index,
+            localX: Number(u.localX ?? 0) || 0,
+            localY: Number(u.localY ?? 0) || 0,
+            localZ: Number(u.localZ ?? 0) || 0,
+            length,
+            width,
+            height,
+            rotationY: Number(u.rotationY ?? 0) || 0
+          }
+        })
+
+        // Nếu đã có layout từ BE thì coi như tầng đã được xác nhận, muốn chỉnh lại phải Reset.
+        confirmed[it.inboundItemId] = true
+      }
+
+      if (Object.keys(layouts).length) {
+        manualLayouts.value = layouts
+        manualLayerConfirmed.value = { ...manualLayerConfirmed.value, ...confirmed }
+      }
+
       selectedItem.value = approvalData.value.items[0] || null
       initThree()
       renderScene()
@@ -341,6 +410,7 @@ const renderScene = () => {
       group.add(bagEdges)
 
       group.position.set(u.localX, u.localY, u.localZ)
+      group.rotation.y = u.rotationY || 0
       group.userData = {
         inboundItemId: item.inboundItemId,
         unitIndex: u.unitIndex
@@ -369,6 +439,7 @@ const renderScene = () => {
       group.add(boxEdges)
 
       group.position.set(u.localX, u.localY, u.localZ)
+      group.rotation.y = u.rotationY || 0
       group.userData = {
         inboundItemId: item.inboundItemId,
         unitIndex: u.unitIndex
@@ -507,6 +578,30 @@ const buildManualLayoutRequest = (): ManualStackLayoutRequest | null => {
   return { items: itemsReq }
 }
 
+const rotateCurrentUnit = () => {
+  if (!isManualMode.value) return
+  if (!placingObject || placingItemId == null || placingUnitIndex == null) {
+    ElMessage.warning('Hiện không có thùng/bao nào đang được đặt để xoay')
+    return
+  }
+
+  const itemId = placingItemId
+  const units = manualLayouts.value[itemId] || []
+  const idx = units.findIndex((u) => u.unitIndex === placingUnitIndex)
+  if (idx === -1) return
+
+  const current = units[idx]
+  const step = Math.PI / 4
+  const twoPi = Math.PI * 2
+  let newRot = (current.rotationY || 0) + step
+  newRot = ((newRot % twoPi) + twoPi) % twoPi
+
+  units[idx] = { ...current, rotationY: newRot }
+  manualLayouts.value[itemId] = [...units]
+
+  placingObject.rotation.y = newRot
+}
+
 const resetCurrentItemLayout = () => {
   if (!isManualMode.value) return
   const item = selectedItem.value
@@ -548,15 +643,6 @@ const addUnitForCurrentItem = () => {
     const unitW = item.unitWidth || item.itemWidth
     const unitH = item.unitHeight || item.itemHeight / 2
 
-    const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
-    const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
-    const perLayer = Math.max(1, maxPerRow * maxPerCol)
-
-    if (units.length >= perLayer) {
-      ElMessage.warning('Pallet không còn chỗ trống trên tầng này để thêm hàng.')
-      return
-    }
-
     const y = item.palletHeight + unitH / 2 // tầng 1
 
     units = [
@@ -576,15 +662,6 @@ const addUnitForCurrentItem = () => {
     const unitL = item.unitLength || item.itemLength
     const unitW = item.unitWidth || item.itemWidth
     const unitH = item.unitHeight || item.itemHeight
-
-    const maxPerRow = Math.max(1, Math.floor(item.palletLength / unitL))
-    const maxPerCol = Math.max(1, Math.floor(item.palletWidth / unitW))
-    const perLayer = Math.max(1, maxPerRow * maxPerCol)
-
-    if (units.length >= perLayer) {
-      ElMessage.warning('Pallet không còn chỗ trống trên tầng này để thêm hàng.')
-      return
-    }
 
     const y = item.palletHeight + unitH / 2
 
@@ -626,6 +703,63 @@ const confirmCurrentLayer = () => {
   if (!baseUnits.length) {
     ElMessage.warning('Chưa có hàng nào trên pallet để xác nhận tầng.')
     return
+  }
+
+  // Kiểm tra các khối trên tầng hiện tại có đang chồng lấn/xuyên qua nhau không
+  if (baseUnits.length > 1) {
+    let hasOverlap = false
+
+    for (let i = 0; i < baseUnits.length && !hasOverlap; i++) {
+      const u1 = baseUnits[i]
+      const aabb1 = getUnitAabbForManual(
+        u1.localX,
+        u1.localZ,
+        u1.length,
+        u1.width,
+        u1.rotationY || 0
+      )
+
+      const halfL1 = u1.length / 2
+      const halfW1 = u1.width / 2
+      const epsilonBase1 = Math.min(halfL1, halfW1)
+      const epsilon1 =
+        Number.isFinite(epsilonBase1) && epsilonBase1 > 0 ? epsilonBase1 * 0.05 : 0.01
+
+      for (let j = i + 1; j < baseUnits.length; j++) {
+        const u2 = baseUnits[j]
+        const aabb2 = getUnitAabbForManual(
+          u2.localX,
+          u2.localZ,
+          u2.length,
+          u2.width,
+          u2.rotationY || 0
+        )
+
+        const epsilonBase2 = Math.min(u2.length / 2, u2.width / 2)
+        const epsilon2 =
+          Number.isFinite(epsilonBase2) && epsilonBase2 > 0 ? epsilonBase2 * 0.05 : 0.01
+
+        const epsilon = Math.max(epsilon1, epsilon2)
+
+        const noOverlap =
+          aabb1.maxX <= aabb2.minX + epsilon ||
+          aabb1.minX >= aabb2.maxX - epsilon ||
+          aabb1.maxZ <= aabb2.minZ + epsilon ||
+          aabb1.minZ >= aabb2.maxZ - epsilon
+
+        if (!noOverlap) {
+          hasOverlap = true
+          break
+        }
+      }
+    }
+
+    if (hasOverlap) {
+      ElMessage.error(
+        'Tầng hiện tại có các khối đang chồng lấn/xuyên qua nhau. Vui lòng sắp xếp lại trước khi xác nhận.'
+      )
+      return
+    }
   }
 
   const total = Math.max(1, item.quantity)
@@ -689,6 +823,7 @@ const updatePlacingObjectPosition = (event: PointerEvent) => {
   const halfPalW = item.palletWidth / 2
   const halfL = u.length / 2
   const halfW = u.width / 2
+  const angle = u.rotationY || 0
 
   let targetX = point.x
   let targetZ = point.z
@@ -701,52 +836,96 @@ const updatePlacingObjectPosition = (event: PointerEvent) => {
     targetZ = Math.round(targetZ / gridStep) * gridStep
   }
 
-  // Tọa độ đề xuất sau khi clamp trong phạm vi pallet
-  const proposedX = THREE.MathUtils.clamp(targetX, -halfPalL + halfL, halfPalL - halfL)
-  const proposedZ = THREE.MathUtils.clamp(targetZ, -halfPalW + halfW, halfPalW - halfW)
-  const y = item.palletHeight + u.height / 2
+  // Tọa độ đề xuất sau khi clamp trong phạm vi pallet (tính theo AABB của khối sau xoay)
+  let extentX = halfL
+  let extentZ = halfW
+  if (Math.abs(angle) >= 1e-6) {
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    extentX = Math.abs(halfL * cos) + Math.abs(halfW * sin)
+    extentZ = Math.abs(halfL * sin) + Math.abs(halfW * cos)
+  }
 
-  // Kiểm tra va chạm AABB 2D (X,Z) với các unit đã đặt trước đó
-  const minX1 = proposedX - halfL
-  const maxX1 = proposedX + halfL
-  const minZ1 = proposedZ - halfW
-  const maxZ1 = proposedZ + halfW
+  let minCenterX = -halfPalL + extentX
+  let maxCenterX = halfPalL - extentX
+  let minCenterZ = -halfPalW + extentZ
+  let maxCenterZ = halfPalW - extentZ
+
+  if (minCenterX > maxCenterX) {
+    minCenterX = maxCenterX = 0
+  }
+  if (minCenterZ > maxCenterZ) {
+    minCenterZ = maxCenterZ = 0
+  }
+
+  const proposedX = THREE.MathUtils.clamp(targetX, minCenterX, maxCenterX)
+  const proposedZ = THREE.MathUtils.clamp(targetZ, minCenterZ, maxCenterZ)
+  const y = item.palletHeight + u.height / 2
 
   const epsilonBase = Math.min(halfL, halfW)
   const epsilon = Number.isFinite(epsilonBase) && epsilonBase > 0 ? epsilonBase * 0.05 : 0.01
 
-  const willOverlap = units.some((other) => {
-    if (other.unitIndex === placingUnitIndex) return false
+  const checkOverlap = (cx: number, cz: number) => {
+    const aabb1 = getUnitAabbForManual(cx, cz, u.length, u.width, angle)
+    const minX1 = aabb1.minX
+    const maxX1 = aabb1.maxX
+    const minZ1 = aabb1.minZ
+    const maxZ1 = aabb1.maxZ
 
-    const halfL2 = other.length / 2
-    const halfW2 = other.width / 2
-    const minX2 = other.localX - halfL2
-    const maxX2 = other.localX + halfL2
-    const minZ2 = other.localZ - halfW2
-    const maxZ2 = other.localZ + halfW2
+    return units.some((other) => {
+      if (other.unitIndex === placingUnitIndex) return false
 
-    // Không giao nhau nếu một trong bốn điều kiện sau đúng (nới lỏng với epsilon nhỏ)
-    if (
-      maxX1 <= minX2 + epsilon ||
-      minX1 >= maxX2 - epsilon ||
-      maxZ1 <= minZ2 + epsilon ||
-      minZ1 >= maxZ2 - epsilon
-    ) {
-      return false
-    }
-    return true
-  })
+      const aabb2 = getUnitAabbForManual(
+        other.localX,
+        other.localZ,
+        other.length,
+        other.width,
+        other.rotationY || 0
+      )
+      const minX2 = aabb2.minX
+      const maxX2 = aabb2.maxX
+      const minZ2 = aabb2.minZ
+      const maxZ2 = aabb2.maxZ
 
-  if (willOverlap) {
-    // Nếu có va chạm, giữ nguyên vị trí hiện tại của unit đang đặt
-    return
+      // Không giao nhau nếu một trong bốn điều kiện sau đúng (nới lỏng với epsilon nhỏ)
+      if (
+        maxX1 <= minX2 + epsilon ||
+        minX1 >= maxX2 - epsilon ||
+        maxZ1 <= minZ2 + epsilon ||
+        minZ1 >= maxZ2 - epsilon
+      ) {
+        return false
+      }
+      return true
+    })
   }
 
-  placingObject.position.set(proposedX, y, proposedZ)
+  const prevX = u.localX
+  const prevZ = u.localZ
 
-  u.localX = proposedX
+  let finalX = proposedX
+  let finalZ = proposedZ
+
+  if (checkOverlap(proposedX, proposedZ)) {
+    // Thử trượt theo trục X (giữ nguyên Z cũ)
+    if (!checkOverlap(proposedX, prevZ)) {
+      finalX = proposedX
+      finalZ = prevZ
+    } else if (!checkOverlap(prevX, proposedZ)) {
+      // Thử trượt theo trục Z (giữ nguyên X cũ)
+      finalX = prevX
+      finalZ = proposedZ
+    } else {
+      // Nếu mọi hướng đều va chạm, giữ nguyên vị trí hiện tại của unit đang đặt
+      return
+    }
+  }
+
+  placingObject.position.set(finalX, y, finalZ)
+
+  u.localX = finalX
   u.localY = y
-  u.localZ = proposedZ
+  u.localZ = finalZ
 }
 
 const handlePointerMove = (event: PointerEvent) => {
@@ -769,13 +948,34 @@ watch(selectedItem, () => {
   renderScene()
 })
 
+const handleKeydown = (event: KeyboardEvent) => {
+  if (event.key !== 'r' && event.key !== 'R') return
+
+  // Bỏ qua nếu đang gõ trong input/textarea/select hoặc contenteditable
+  const target = event.target as HTMLElement | null
+  if (target) {
+    const tag = target.tagName.toLowerCase()
+    const isFormElement =
+      tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable
+    if (isFormElement) return
+  }
+
+  // Chỉ áp dụng cho manual mode
+  if (!isManualMode.value) return
+
+  event.preventDefault()
+  rotateCurrentUnit()
+}
+
 onMounted(() => {
   loadApprovalData()
   window.addEventListener('resize', onResize)
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onResize)
+  window.removeEventListener('keydown', handleKeydown)
   if (dragControls) {
     dragControls.dispose()
     dragControls = null
@@ -843,6 +1043,20 @@ const handleApprove = async () => {
   try {
     // Nếu ở chế độ tự xếp, lưu layout chi tiết trước khi duyệt
     if (isManualMode.value) {
+      const hasUnconfirmed = approvalData.value.items.some((item) => {
+        const units = manualLayouts.value[item.inboundItemId]
+        if (!units || !units.length) return false
+        return !manualLayerConfirmed.value[item.inboundItemId]
+      })
+
+      if (hasUnconfirmed) {
+        ElMessage.warning(
+          'Bạn cần nhấn "Xác nhận tầng" cho tất cả pallet đang tự xếp trước khi duyệt & xem 3D.'
+        )
+        approving.value = false
+        return
+      }
+
       const layoutReq = buildManualLayoutRequest()
       if (!layoutReq) {
         ElMessage.error('Không thể xây dựng layout xếp hàng thủ công')
@@ -1073,6 +1287,7 @@ const handleBack = () => {
             <div ref="canvasContainer" class="canvas-container" v-loading="loading"></div>
             <div v-if="isManualMode" class="manual-tools-overlay">
               <ElButton size="small" @click="addUnitForCurrentItem">Thêm hàng</ElButton>
+              <ElButton size="small" @click="rotateCurrentUnit">Xoay 45° thùng đang đặt</ElButton>
               <ElButton size="small" @click="resetCurrentItemLayout">Reset layout pallet</ElButton>
               <ElButton size="small" type="primary" @click="confirmCurrentLayer">
                 Xác nhận tầng

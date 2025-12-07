@@ -137,6 +137,7 @@ export interface PreferredPalletLayout {
   shelfId?: number | null
   positionX?: number
   positionZ?: number
+  rotationY?: number
 }
 
 export interface ApproveInboundLayoutRequest {

@@ -186,6 +186,10 @@ const createdPallets = ref<PalletViewModel[]>([])
 const selectedPalletId = ref<number | undefined>(undefined)
 const loadingPalletTemplates = ref(false)
 
+const generatePalletBarcode = () => {
+  return `PAL-${Date.now()}`
+}
+
 const palletFromTemplateForm = reactive<{
   templateId: number | undefined
   barcode: string
@@ -239,8 +243,7 @@ const createPalletFromTemplate = async () => {
     return
   }
   if (!palletFromTemplateForm.barcode) {
-    ElMessage.error('Vui lòng nhập barcode pallet')
-    return
+    palletFromTemplateForm.barcode = generatePalletBarcode()
   }
   const payload: CreatePalletFromTemplateRequest = {
     barcode: palletFromTemplateForm.barcode,
@@ -258,8 +261,7 @@ const createPalletFromTemplate = async () => {
 
 const createCustomPallet = async () => {
   if (!customPalletForm.barcode) {
-    ElMessage.error('Vui lòng nhập barcode pallet')
-    return
+    customPalletForm.barcode = generatePalletBarcode()
   }
   if (!customPalletForm.length || !customPalletForm.width) {
     ElMessage.error('Chiều dài và chiều rộng pallet là bắt buộc')
@@ -586,8 +588,29 @@ const initAutoPreviewScenes = () => {
     const baseH = product.standardHeight || 1
     const gapRatio = 0.96
 
-    const unitL = baseL
-    const unitW = baseW
+    let unitL = baseL
+    let unitW = baseW
+    const pattern = tpl.id
+
+    if (pattern !== 'cross') {
+      const stepX0 = baseL
+      const stepZ0 = baseW
+      const maxPerRow0 = Math.max(1, Math.floor(palletLength / stepX0))
+      const maxPerCol0 = Math.max(1, Math.floor(palletWidth / stepZ0))
+      const perLayer0 = Math.max(1, maxPerRow0 * maxPerCol0)
+
+      const stepX1 = baseW
+      const stepZ1 = baseL
+      const maxPerRow1 = Math.max(1, Math.floor(palletLength / stepX1))
+      const maxPerCol1 = Math.max(1, Math.floor(palletWidth / stepZ1))
+      const perLayer1 = Math.max(1, maxPerRow1 * maxPerCol1)
+
+      if (perLayer1 > perLayer0) {
+        unitL = baseW
+        unitW = baseL
+      }
+    }
+
     const unitH = isBag ? baseH * 0.6 : baseH
 
     const unitGeo = new THREE.BoxGeometry(unitL * gapRatio, unitH, unitW * gapRatio)
@@ -597,8 +620,19 @@ const initAutoPreviewScenes = () => {
       transparent: true
     })
 
-    const maxPerRow = Math.max(1, Math.floor(palletLength / unitL))
-    const maxPerCol = Math.max(1, Math.floor(palletWidth / unitW))
+    // Bước lưới: giống backend
+    //  - "cross": dùng ô vuông theo kích thước lớn hơn giữa L/W để an toàn khi xoay 90°
+    //  - "straight" / "brick": dùng đúng unitL / unitW để tận dụng diện tích mỗi tầng
+    let stepX = unitL
+    let stepZ = unitW
+    if (pattern === 'cross') {
+      const step = Math.max(unitL, unitW)
+      stepX = step
+      stepZ = step
+    }
+
+    const maxPerRow = Math.max(1, Math.floor(palletLength / stepX))
+    const maxPerCol = Math.max(1, Math.floor(palletWidth / stepZ))
     const perLayer = Math.max(1, maxPerRow * maxPerCol)
 
     let minX = Number.POSITIVE_INFINITY
@@ -606,8 +640,6 @@ const initAutoPreviewScenes = () => {
     let minZ = Number.POSITIVE_INFINITY
     let maxZ = Number.NEGATIVE_INFINITY
     let maxTop = Number.NEGATIVE_INFINITY
-
-    const pattern = tpl.id
 
     for (let idx = 0; idx < qty; idx++) {
       const layer = Math.floor(idx / perLayer)
@@ -619,6 +651,7 @@ const initAutoPreviewScenes = () => {
       let rotY = 0
 
       if (pattern === 'brick') {
+        // Giữ nguyên ý tưởng backend: dịch nửa chiều dài đơn vị theo trục X cho các tầng lẻ
         dx = layer % 2 === 1 ? unitL / 2 : 0
       } else if (pattern === 'cross') {
         if ((row + col) % 2 === 1) {
@@ -626,11 +659,12 @@ const initAutoPreviewScenes = () => {
         }
       }
 
-      const xStart = -palletLength / 2 + unitL / 2
-      const zStart = -palletWidth / 2 + unitW / 2
+      const xStart = -palletLength / 2 + stepX / 2
+      const zStart = -palletWidth / 2 + stepZ / 2
 
-      let x = xStart + col * unitL + dx
-      const z = zStart + row * unitW
+      let x = xStart + col * stepX + dx
+      const z = zStart + row * stepZ
+
       const y = palletHeight + unitH / 2 + layer * unitH
 
       const halfPalL = palletLength / 2
@@ -944,12 +978,6 @@ onMounted(() => {
                     />
                   </ElSelect>
                 </ElFormItem>
-                <ElFormItem label="Barcode" required>
-                  <ElInput
-                    v-model="palletFromTemplateForm.barcode"
-                    placeholder="Mã barcode pallet"
-                  />
-                </ElFormItem>
                 <ElFormItem label="Loại pallet">
                   <ElInput v-model="palletFromTemplateForm.palletType" placeholder="Loại pallet" />
                 </ElFormItem>
@@ -963,9 +991,6 @@ onMounted(() => {
             </ElTabPane>
             <ElTabPane label="Tùy chỉnh" name="custom">
               <ElForm label-width="140px">
-                <ElFormItem label="Barcode" required>
-                  <ElInput v-model="customPalletForm.barcode" placeholder="Mã barcode pallet" />
-                </ElFormItem>
                 <ElFormItem label="Kích thước pallet (m)" required>
                   <div class="inline-inputs dims-group">
                     <div class="dim-field">

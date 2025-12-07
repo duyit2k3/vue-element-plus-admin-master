@@ -6,7 +6,6 @@ import {
   ElButton,
   ElRadioGroup,
   ElRadioButton,
-  ElCheckbox,
   ElSelect,
   ElOption,
   ElDivider,
@@ -70,6 +69,7 @@ interface InboundPendingPallet {
   positionY: number
   positionZ: number
   isGround: boolean
+  rotationY?: number // góc xoay pallet (rad), chỉ dùng trên FE 3D
 }
 
 const inboundPendingPallets = ref<InboundPendingPallet[]>([])
@@ -110,6 +110,105 @@ const findShelfById = (shelfId: number) => {
     if (shelf) return { rack, shelf }
   }
   return null
+}
+
+const rotateSelectedInboundPallet = () => {
+  if (!inboundMode.value) return
+  if (!warehouseData.value) return
+
+  const info = getSelectedInboundPendingPallet()
+  if (!info) {
+    ElMessage.warning('Vui lòng chọn một pallet inbound đang chờ duyệt trong khu vực 3D')
+    return
+  }
+
+  const idx = inboundPendingPallets.value.findIndex((p) => p.palletId === info.palletId)
+  if (idx === -1) return
+
+  const pending = inboundPendingPallets.value[idx]
+
+  const size = getPalletSizeForPalletId(pending.palletId)
+  if (!size) {
+    ElMessage.warning('Không xác định được kích thước pallet để xoay')
+    return
+  }
+
+  const length = size.length
+  const width = size.width
+
+  const currentRotation = pending.rotationY ?? 0
+  const step = Math.PI / 4 // 45°
+  let newRotation = currentRotation + step
+  const twoPi = Math.PI * 2
+  newRotation = ((newRotation % twoPi) + twoPi) % twoPi
+
+  const zone = warehouseData.value.zones?.find((z) => z.zoneId === pending.zoneId)
+  if (!zone) {
+    ElMessage.warning('Không tìm thấy khu vực (zone) của pallet inbound')
+    return
+  }
+
+  const baseX = pending.positionX
+  const baseZ = pending.positionZ
+
+  const aabb = getPalletAabb(baseX, baseZ, length, width, newRotation)
+  const zoneMinX = zone.positionX
+  const zoneMaxX = zone.positionX + zone.length
+  const zoneMinZ = zone.positionZ
+  const zoneMaxZ = zone.positionZ + zone.width
+
+  if (
+    aabb.minX < zoneMinX - 1e-6 ||
+    aabb.maxX > zoneMaxX + 1e-6 ||
+    aabb.minZ < zoneMinZ - 1e-6 ||
+    aabb.maxZ > zoneMaxZ + 1e-6
+  ) {
+    ElMessage.warning('Không thể xoay pallet vì sẽ vượt ra ngoài khu vực hiện tại')
+    return
+  }
+
+  const collided =
+    pending.shelfId != null
+      ? hasShelfCollision(
+          pending.palletId,
+          pending.zoneId,
+          pending.shelfId,
+          baseX,
+          baseZ,
+          length,
+          width,
+          newRotation
+        )
+      : hasGroundCollision(
+          pending.palletId,
+          pending.zoneId,
+          baseX,
+          baseZ,
+          length,
+          width,
+          newRotation
+        )
+
+  if (collided) {
+    ElMessage.warning('Không thể xoay pallet vì sẽ chạm vào pallet hoặc kệ khác')
+    return
+  }
+
+  const updated = {
+    ...pending,
+    rotationY: newRotation
+  }
+
+  inboundPendingPallets.value.splice(idx, 1, updated)
+
+  if (selectedObject.value && selectedObject.value.palletId === info.palletId) {
+    selectedObject.value = {
+      ...selectedObject.value,
+      rotationY: newRotation
+    }
+  }
+
+  renderWarehouse()
 }
 
 // Helper dựng pallet ảo cho inbound pending khi pallet chưa tồn tại trong warehouseData.pallets
@@ -174,20 +273,55 @@ const rectsOverlap = (
   return aMinX < bMaxX && aMaxX > bMinX && aMinZ < bMaxZ && aMaxZ > bMinZ
 }
 
+const getPalletAabb = (
+  baseX: number,
+  baseZ: number,
+  length: number,
+  width: number,
+  rotationY?: number
+) => {
+  const angle = rotationY ?? 0
+
+  if (Math.abs(angle) < 1e-6) {
+    return {
+      minX: baseX,
+      maxX: baseX + length,
+      minZ: baseZ,
+      maxZ: baseZ + width
+    }
+  }
+
+  const cx = baseX + length / 2
+  const cz = baseZ + width / 2
+  const halfL = length / 2
+  const halfW = width / 2
+
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+
+  const extentX = Math.abs(halfL * cos) + Math.abs(halfW * sin)
+  const extentZ = Math.abs(halfL * sin) + Math.abs(halfW * cos)
+
+  return {
+    minX: cx - extentX,
+    maxX: cx + extentX,
+    minZ: cz - extentZ,
+    maxZ: cz + extentZ
+  }
+}
+
 const hasGroundCollision = (
   palletId: number,
   zoneId: number,
   baseX: number,
   baseZ: number,
   length: number,
-  width: number
+  width: number,
+  rotationY?: number
 ) => {
   if (!warehouseData.value) return false
 
-  const minX = baseX
-  const maxX = baseX + length
-  const minZ = baseZ
-  const maxZ = baseZ + width
+  const { minX, maxX, minZ, maxZ } = getPalletAabb(baseX, baseZ, length, width, rotationY)
 
   let collided = false
 
@@ -199,6 +333,13 @@ const hasGroundCollision = (
     const rMinZ = rack.positionZ
     const rMaxZ = rack.positionZ + rack.width
     if (rectsOverlap(minX, maxX, minZ, maxZ, rMinX, rMaxX, rMinZ, rMaxZ)) {
+      console.debug('[Inbound3D] Ground collision with rack', {
+        palletId,
+        zoneId,
+        rackId: rack.rackId,
+        baseX,
+        baseZ
+      })
       collided = true
     }
   })
@@ -220,6 +361,13 @@ const hasGroundCollision = (
     const pMinZ = p.positionZ
     const pMaxZ = p.positionZ + size.width
     if (rectsOverlap(minX, maxX, minZ, maxZ, pMinX, pMaxX, pMinZ, pMaxZ)) {
+      console.debug('[Inbound3D] Ground collision with existing pallet', {
+        palletId,
+        otherPalletId: p.palletId,
+        zoneId,
+        baseX,
+        baseZ
+      })
       collided = true
     }
   })
@@ -233,11 +381,15 @@ const hasGroundCollision = (
     if (p.shelfId != null) return
     const size = getPalletSizeForPalletId(p.palletId)
     if (!size) return
-    const pMinX = p.positionX
-    const pMaxX = p.positionX + size.length
-    const pMinZ = p.positionZ
-    const pMaxZ = p.positionZ + size.width
-    if (rectsOverlap(minX, maxX, minZ, maxZ, pMinX, pMaxX, pMinZ, pMaxZ)) {
+    const other = getPalletAabb(p.positionX, p.positionZ, size.length, size.width, p.rotationY)
+    if (rectsOverlap(minX, maxX, minZ, maxZ, other.minX, other.maxX, other.minZ, other.maxZ)) {
+      console.debug('[Inbound3D] Ground collision with inbound preview pallet', {
+        palletId,
+        otherPalletId: p.palletId,
+        zoneId,
+        baseX,
+        baseZ
+      })
       collided = true
     }
   })
@@ -284,14 +436,12 @@ const hasShelfCollision = (
   baseX: number,
   baseZ: number,
   length: number,
-  width: number
+  width: number,
+  rotationY?: number
 ) => {
   if (!warehouseData.value) return false
 
-  const minX = baseX
-  const maxX = baseX + length
-  const minZ = baseZ
-  const maxZ = baseZ + width
+  const { minX, maxX, minZ, maxZ } = getPalletAabb(baseX, baseZ, length, width, rotationY)
 
   let collided = false
 
@@ -320,11 +470,8 @@ const hasShelfCollision = (
     if (p.shelfId !== shelfId) return
     const size = getPalletSizeForPalletId(p.palletId)
     if (!size) return
-    const pMinX = p.positionX
-    const pMaxX = p.positionX + size.length
-    const pMinZ = p.positionZ
-    const pMaxZ = p.positionZ + size.width
-    if (rectsOverlap(minX, maxX, minZ, maxZ, pMinX, pMaxX, pMinZ, pMaxZ)) {
+    const other = getPalletAabb(p.positionX, p.positionZ, size.length, size.width, p.rotationY)
+    if (rectsOverlap(minX, maxX, minZ, maxZ, other.minX, other.maxX, other.minZ, other.maxZ)) {
       collided = true
     }
   })
@@ -367,7 +514,7 @@ const palletGridStep = 0.1
 
 // UI State
 const viewMode = ref<'zones' | 'items' | 'pallets' | 'racks' | ''>('')
-const showGrid = ref(true)
+const showGrid = ref(false)
 const showLabels = ref(false)
 const selectedObject = ref<any>(null)
 const filterByCustomer = ref<number | undefined>(undefined)
@@ -461,7 +608,8 @@ const loadWarehouse3DData = async () => {
               positionX: l.positionX,
               positionY: l.positionY,
               positionZ: l.positionZ,
-              isGround: l.isGround
+              isGround: l.isGround,
+              rotationY: 0
             }))
 
             // Nếu chưa có filterByZone thì set theo zone của layout đầu tiên
@@ -690,7 +838,8 @@ const renderWarehouse = () => {
         shelfId: p.shelfId ?? null,
         positionX: p.positionX,
         positionY: p.positionY,
-        positionZ: p.positionZ
+        positionZ: p.positionZ,
+        rotationY: p.rotationY ?? 0
       }
 
       renderPallet(virtualPallet, true)
@@ -952,6 +1101,12 @@ const renderPallet = (pallet: any, pendingInbound = false) => {
     pallet.positionY + pallet.palletHeight / 2,
     pallet.positionZ + pallet.palletWidth / 2
   )
+  if (typeof pallet.rotationY === 'number') {
+    mesh.rotation.y = pallet.rotationY
+  } else if (typeof pallet.rotationY === 'string') {
+    const ry = Number(pallet.rotationY)
+    if (Number.isFinite(ry)) mesh.rotation.y = ry
+  }
   mesh.userData = { type: 'pallet', data: pallet, pendingInbound }
   mesh.name = `pallet_${pallet.palletId}`
   mesh.castShadow = true
@@ -962,6 +1117,7 @@ const renderPallet = (pallet: any, pendingInbound = false) => {
   const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
   const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat)
   edgeLines.position.copy(mesh.position)
+  edgeLines.rotation.copy(mesh.rotation)
   edgeLines.userData = mesh.userData
   edgeLines.name = `${mesh.name}_outline`
 
@@ -1044,6 +1200,10 @@ const renderItemFromStackUnits = (
   const palletBaseY = pallet.positionY
   const palletCenterZ = pallet.positionZ + pallet.palletWidth / 2
 
+  const palletRot = typeof pallet.rotationY === 'number' ? pallet.rotationY : 0
+  const cos = Math.cos(palletRot)
+  const sin = Math.sin(palletRot)
+
   const material = new THREE.MeshPhongMaterial({
     color,
     opacity: 0.95,
@@ -1060,12 +1220,21 @@ const renderItemFromStackUnits = (
     const geometry = new THREE.BoxGeometry(length, height, width)
     const mesh = new THREE.Mesh(geometry, material)
 
+    const localX = Number(u.localX || 0)
+    const localZ = Number(u.localZ || 0)
+    const rotatedX = localX * cos - localZ * sin
+    const rotatedZ = localX * sin + localZ * cos
+
     mesh.position.set(
-      palletCenterX + Number(u.localX || 0),
+      palletCenterX + rotatedX,
       palletBaseY + Number(u.localY || 0),
-      palletCenterZ + Number(u.localZ || 0)
+      palletCenterZ + rotatedZ
     )
-    mesh.rotation.y = Number(u.rotationY || 0)
+    const unitRot = Number(u.rotationY || 0)
+    // In inbound pending mode (xem 3D duyệt inbound), chỉ xoay footprint theo palletRot,
+    // còn hướng của từng thùng giữ nguyên theo layout (unitRot).
+    // Với pallet đã lưu trong kho (không pendingInbound), vẫn xoay cả pallet + hàng cùng nhau.
+    mesh.rotation.y = pendingInbound ? unitRot : palletRot + unitRot
     mesh.userData = { type: 'item', data: item, pendingInbound }
     mesh.name = `item_${item.itemId}_unit_${u.unitIndex ?? 0}`
     mesh.castShadow = true
@@ -1140,9 +1309,13 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number, _pendingI
   const edgesGeometry = new THREE.EdgesGeometry(geometry)
   const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 })
 
-  const baseX = pallet.positionX + (item.positionX || 0)
+  const palletCenterX = pallet.positionX + pallet.palletLength / 2
+  const palletCenterZ = pallet.positionZ + pallet.palletWidth / 2
   const baseY = pallet.positionY + pallet.palletHeight + (item.positionY || 0)
-  const baseZ = pallet.positionZ + (item.positionZ || 0)
+
+  const palletRot = typeof pallet.rotationY === 'number' ? pallet.rotationY : 0
+  const cos = Math.cos(palletRot)
+  const sin = Math.sin(palletRot)
 
   for (let idx = 0; idx < quantity; idx++) {
     const layer = Math.floor(idx / perLayer)
@@ -1151,10 +1324,20 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number, _pendingI
     const col = posInLayer % maxPerRow
 
     const mesh = new THREE.Mesh(geometry, material)
+
+    const localBaseX = Number(item.positionX || 0)
+    const localBaseZ = Number(item.positionZ || 0)
+
+    const localX0 = localBaseX + boxLength * (col + 0.5) - pallet.palletLength / 2
+    const localZ0 = localBaseZ + boxWidth * (row + 0.5) - pallet.palletWidth / 2
+
+    const rotatedX = localX0 * cos - localZ0 * sin
+    const rotatedZ = localX0 * sin + localZ0 * cos
+
     mesh.position.set(
-      baseX + boxLength * (col + 0.5),
+      palletCenterX + rotatedX,
       baseY + boxHeight * (layer + 0.5),
-      baseZ + boxWidth * (row + 0.5)
+      palletCenterZ + rotatedZ
     )
     mesh.userData = { type: 'item', data: item }
     mesh.name = `item_${item.itemId}_carton`
@@ -1347,6 +1530,7 @@ const onPointerMove = (event: PointerEvent) => {
   if (Number.isFinite(palletId)) {
     const baseX = finalX - halfL
     const baseZ = finalZ - halfW
+    const rotationY = typeof data.rotationY === 'number' ? data.rotationY : 0
 
     const collided =
       data.shelfId != null
@@ -1357,7 +1541,8 @@ const onPointerMove = (event: PointerEvent) => {
             baseX,
             baseZ,
             data.palletLength,
-            data.palletWidth
+            data.palletWidth,
+            rotationY
           )
         : hasGroundCollision(
             palletId,
@@ -1365,7 +1550,8 @@ const onPointerMove = (event: PointerEvent) => {
             baseX,
             baseZ,
             data.palletLength,
-            data.palletWidth
+            data.palletWidth,
+            rotationY
           )
 
     if (collided) {
@@ -1733,11 +1919,6 @@ const resetViewMode = () => {
   renderWarehouse()
 }
 
-const toggleGrid = () => {
-  const grid = scene.getObjectByName('gridHelper')
-  if (grid) grid.visible = showGrid.value
-}
-
 const resetCamera = () => {
   if (!warehouseData.value) return
   const wh = warehouseData.value
@@ -1813,6 +1994,8 @@ const moveSelectedInboundPalletToGround = () => {
   const halfL = length / 2
   const halfW = width / 2
 
+  const rotationY = typeof pending.rotationY === 'number' ? pending.rotationY : 0
+
   const zoneMinX = zone.positionX
   const zoneMaxX = zone.positionX + zone.length
   const zoneMinZ = zone.positionZ
@@ -1849,7 +2032,15 @@ const moveSelectedInboundPalletToGround = () => {
       const dz = centerZ - currentCenterZ
       const dist2 = dx * dx + dz * dz
 
-      const collided = hasGroundCollision(pending.palletId, pending.zoneId, bx, bz, length, width)
+      const collided = hasGroundCollision(
+        pending.palletId,
+        pending.zoneId,
+        bx,
+        bz,
+        length,
+        width,
+        rotationY
+      )
 
       if (!collided && dist2 < bestDist2 - 1e-9) {
         bestDist2 = dist2
@@ -1902,6 +2093,8 @@ const moveSelectedInboundPalletToNearestShelf = () => {
 
   const pending = inboundPendingPallets.value[idx]
 
+  const rotationY = typeof pending.rotationY === 'number' ? pending.rotationY : 0
+
   // Lấy kích thước pallet để kiểm tra phù hợp với chiều dài tầng kệ
   const size = getPalletSizeForPalletId(pending.palletId)
   if (!size) {
@@ -1932,13 +2125,45 @@ const moveSelectedInboundPalletToNearestShelf = () => {
   // Helper: kiểm tra chiều dài tầng/kệ có chứa được pallet không
   const canFitOnShelf = (rack: any, shelf: any) => {
     const usableLength = Number((shelf && (shelf as any).length) ?? rack.length ?? 0)
-    if (!Number.isFinite(usableLength) || usableLength <= 0) return false
-    if (length > usableLength) return false
+    if (!Number.isFinite(usableLength) || usableLength <= 0) {
+      console.debug('[Inbound3D] Shelf rejected (invalid usable length)', {
+        rackId: rack.rackId,
+        shelfId: shelf?.shelfId,
+        usableLength
+      })
+      return false
+    }
+    if (length > usableLength) {
+      console.debug('[Inbound3D] Shelf rejected (pallet too long for shelf)', {
+        rackId: rack.rackId,
+        shelfId: shelf?.shelfId,
+        palletLength: length,
+        usableLength
+      })
+      return false
+    }
     const clearHeight = getShelfClearHeightFrontend(rack, shelf)
     if ((palletHeight > 0 || goodsHeight > 0) && clearHeight > 0) {
       const totalHeight = palletHeight + goodsHeight
-      if (totalHeight > clearHeight) return false
+      if (totalHeight > clearHeight) {
+        console.debug('[Inbound3D] Shelf rejected (not enough clear height)', {
+          rackId: rack.rackId,
+          shelfId: shelf?.shelfId,
+          palletHeight,
+          goodsHeight,
+          totalHeight,
+          clearHeight
+        })
+        return false
+      }
     }
+    console.debug('[Inbound3D] Shelf accepted (fits by length & height)', {
+      rackId: rack.rackId,
+      shelfId: shelf?.shelfId,
+      palletLength: length,
+      palletHeight,
+      goodsHeight
+    })
     return true
   }
 
@@ -2069,7 +2294,8 @@ const moveSelectedInboundPalletToNearestShelf = () => {
         baseX,
         baseZ,
         length,
-        width
+        width,
+        rotationY
       )
       if (!collided) {
         return { baseX, baseZ, shelfY, shelf }
@@ -2137,7 +2363,8 @@ const handleApproveInboundFrom3D = async () => {
     zoneId: p.zoneId,
     shelfId: p.shelfId ?? undefined,
     positionX: p.positionX,
-    positionZ: p.positionZ
+    positionZ: p.positionZ,
+    rotationY: typeof p.rotationY === 'number' ? p.rotationY : 0
   }))
 
   const payload = {
@@ -2159,12 +2386,33 @@ const handleApproveInboundFrom3D = async () => {
   }
 }
 
+const handleKeydown = (event: KeyboardEvent) => {
+  if (event.key !== 'r' && event.key !== 'R') return
+
+  // Chỉ áp dụng khi đang ở chế độ inbound 3D approval
+  if (!inboundMode.value) return
+
+  // Bỏ qua nếu đang gõ trong input/textarea/select hoặc contenteditable
+  const target = event.target as HTMLElement | null
+  if (target) {
+    const tag = target.tagName.toLowerCase()
+    const isFormElement =
+      tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable
+    if (isFormElement) return
+  }
+
+  event.preventDefault()
+  rotateSelectedInboundPallet()
+}
+
 onMounted(() => {
   loadWarehouse3DData()
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onWindowResize)
+  window.removeEventListener('keydown', handleKeydown)
   if (renderer) {
     renderer.domElement.removeEventListener('click', onCanvasClick)
     if (container.value?.contains(renderer.domElement)) {
@@ -2278,10 +2526,6 @@ onBeforeUnmount(() => {
           </template>
 
           <div class="control-section">
-            <h4>Hiển thị</h4>
-            <ElCheckbox v-model="showGrid" @change="toggleGrid">Lưới nền</ElCheckbox>
-            <ElCheckbox v-model="showLabels" @change="renderWarehouse">Nhãn</ElCheckbox>
-
             <ElButton
               size="small"
               class="no-margin-left-btn"
@@ -2384,6 +2628,7 @@ onBeforeUnmount(() => {
             <p>• Giữ chuột trái + kéo để xoay camera</p>
             <p>• Cuộn chuột để zoom in/out</p>
             <p>• Giữ chuột phải + kéo để di chuyển</p>
+            <p>• Nhấn R để xoay pallet</p>
           </div>
         </div>
       </div>
@@ -2496,6 +2741,10 @@ onBeforeUnmount(() => {
 
 .no-margin-left-btn {
   margin-left: 0 !important;
+}
+
+.rotate-btn {
+  font-weight: 600;
 }
 
 .control-panel {
