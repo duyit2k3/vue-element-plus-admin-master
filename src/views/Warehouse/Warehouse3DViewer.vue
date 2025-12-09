@@ -137,7 +137,7 @@ const rotateSelectedInboundPallet = () => {
   const width = size.width
 
   const currentRotation = pending.rotationY ?? 0
-  const step = Math.PI / 4 // 45°
+  const step = Math.PI / 2 // 90°
   let newRotation = currentRotation + step
   const twoPi = Math.PI * 2
   newRotation = ((newRotation % twoPi) + twoPi) % twoPi
@@ -193,6 +193,16 @@ const rotateSelectedInboundPallet = () => {
     ElMessage.warning('Không thể xoay pallet vì sẽ chạm vào pallet hoặc kệ khác')
     return
   }
+
+  console.log('[Inbound3D] rotateSelectedInboundPallet', {
+    palletId: pending.palletId,
+    previousRotation: currentRotation,
+    newRotation,
+    baseX,
+    baseZ,
+    zoneId: pending.zoneId,
+    shelfId: pending.shelfId
+  })
 
   const updated = {
     ...pending,
@@ -885,6 +895,16 @@ const renderWarehouse = () => {
   warehouseData.value.items?.forEach((item) => {
     const pallet = warehouseData.value!.pallets?.find((p) => p.palletId === item.palletId)
     if (!pallet) return
+
+    // Ở chế độ inbound-approval, nếu pallet này đang nằm trong inboundPendingPallets
+    // thì bỏ qua version hàng trong DB, chỉ render overlay inbound bên trên
+    if (
+      inboundMode.value &&
+      inboundPendingPallets.value.some((ip) => ip.palletId === item.palletId)
+    ) {
+      return
+    }
+
     const zone = warehouseData.value!.zones?.find((z) => z.zoneId === pallet.zoneId)
     if (!zone) return
     if (filterByZone.value && zone.zoneId !== filterByZone.value) return
@@ -1231,10 +1251,26 @@ const renderItemFromStackUnits = (
       palletCenterZ + rotatedZ
     )
     const unitRot = Number(u.rotationY || 0)
-    // In inbound pending mode (xem 3D duyệt inbound), chỉ xoay footprint theo palletRot,
-    // còn hướng của từng thùng giữ nguyên theo layout (unitRot).
-    // Với pallet đã lưu trong kho (không pendingInbound), vẫn xoay cả pallet + hàng cùng nhau.
-    mesh.rotation.y = pendingInbound ? unitRot : palletRot + unitRot
+    mesh.rotation.y = palletRot + unitRot
+    if (pendingInbound) {
+      console.log('[Inbound3D] renderItemFromStackUnits', {
+        palletId: pallet.palletId,
+        itemId: item.itemId ?? null,
+        inboundItemId: item.inboundItemId ?? null,
+        unitIndex: u.unitIndex ?? null,
+        palletRot,
+        unitRot,
+        palletCenterX,
+        palletCenterZ,
+        localX,
+        localZ,
+        rotatedX,
+        rotatedZ,
+        worldX: mesh.position.x,
+        worldY: mesh.position.y,
+        worldZ: mesh.position.z
+      })
+    }
     mesh.userData = { type: 'item', data: item, pendingInbound }
     mesh.name = `item_${item.itemId}_unit_${u.unitIndex ?? 0}`
     mesh.castShadow = true
@@ -2388,18 +2424,27 @@ const handleApproveInboundFrom3D = async () => {
 
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.key !== 'r' && event.key !== 'R') return
+  const target = event.target as HTMLElement | null
+  let isFormElement = false
+  if (target) {
+    const tag = target.tagName.toLowerCase()
+    isFormElement =
+      tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable
+  }
+
+  console.log('[Inbound3D] handleKeydown', {
+    key: event.key,
+    inboundMode: inboundMode.value,
+    targetTag: target?.tagName,
+    isFormElement,
+    receiptId: inboundReceiptId.value
+  })
 
   // Chỉ áp dụng khi đang ở chế độ inbound 3D approval
   if (!inboundMode.value) return
 
   // Bỏ qua nếu đang gõ trong input/textarea/select hoặc contenteditable
-  const target = event.target as HTMLElement | null
-  if (target) {
-    const tag = target.tagName.toLowerCase()
-    const isFormElement =
-      tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable
-    if (isFormElement) return
-  }
+  if (isFormElement) return
 
   event.preventDefault()
   rotateSelectedInboundPallet()

@@ -69,6 +69,20 @@ const receiptId = ref<number | null>(null)
 
 const isManualMode = computed(() => approvalData.value?.stackMode?.toLowerCase() === 'manual')
 
+const disableApproveButton = computed(() => {
+  if (!isManualMode.value || !approvalData.value) {
+    return false
+  }
+
+  return approvalData.value.items.some((item) => {
+    const units = manualLayouts.value[item.inboundItemId]
+    if (!units || !units.length) {
+      return false
+    }
+    return !manualLayerConfirmed.value[item.inboundItemId]
+  })
+})
+
 const getUnitAabbForManual = (
   centerX: number,
   centerZ: number,
@@ -591,7 +605,7 @@ const rotateCurrentUnit = () => {
   if (idx === -1) return
 
   const current = units[idx]
-  const step = Math.PI / 4
+  const step = Math.PI / 2
   const twoPi = Math.PI * 2
   let newRot = (current.rotationY || 0) + step
   newRot = ((newRot % twoPi) + twoPi) % twoPi
@@ -1230,7 +1244,12 @@ const handleBack = () => {
               <Icon icon="vi-ep:magic-stick" />
               Tối ưu tự động
             </ElButton>
-            <ElButton type="primary" :loading="approving" @click="handleApprove">
+            <ElButton
+              type="primary"
+              :loading="approving"
+              :disabled="disableApproveButton"
+              @click="handleApprove"
+            >
               <Icon icon="vi-ant-design:check-circle-outlined" />
               Duyệt & Xem Kho 3D
             </ElButton>
@@ -1287,7 +1306,7 @@ const handleBack = () => {
             <div ref="canvasContainer" class="canvas-container" v-loading="loading"></div>
             <div v-if="isManualMode" class="manual-tools-overlay">
               <ElButton size="small" @click="addUnitForCurrentItem">Thêm hàng</ElButton>
-              <ElButton size="small" @click="rotateCurrentUnit">Xoay 45° thùng đang đặt</ElButton>
+              <ElButton size="small" @click="rotateCurrentUnit">Xoay 90° thùng đang đặt</ElButton>
               <ElButton size="small" @click="resetCurrentItemLayout">Reset layout pallet</ElButton>
               <ElButton size="small" type="primary" @click="confirmCurrentLayer">
                 Xác nhận tầng
