@@ -1,17 +1,33 @@
 import request from '@/axios'
 
 export interface InboundItemRequest {
-  palletId: number
+  palletId?: number | null
+  palletTemplateId?: number | null
+  palletType?: string | null
+
+  autoStackTemplate?: 'straight' | 'brick' | 'cross' | null
+
+  stackMode?: 'auto' | 'manual'
+
   productId: number
   quantity: number
   manufacturingDate: string
   expiryDate?: string | null
   unitPrice: number
   totalAmount: number
-  batchNumber?: string
+  batchNumber?: string | null
+
+  // Kích thước khối hàng trên pallet (nếu muốn override kích thước chuẩn sản phẩm)
   length?: number
   width?: number
   height?: number
+
+  // Thông số pallet custom (khi không dùng palletTemplateId)
+  palletLength?: number
+  palletWidth?: number
+  palletHeight?: number
+  palletMaxWeight?: number
+  palletMaxStackHeight?: number
 }
 
 export interface CreateInboundRequestRequest {
@@ -110,6 +126,7 @@ export interface InboundApprovalItem {
   palletWidth: number
   palletHeight: number
   isBag: boolean
+  stackMode?: string | null
   // Layout chi tiết các đơn vị hàng trên pallet (nếu có), lấy từ InboundItemStackUnits.
   // Dùng cho viewer 2D/3D để vẽ đúng cách xếp.
   stackUnits?: import('@/api/warehouse').ItemStackUnit[] | null

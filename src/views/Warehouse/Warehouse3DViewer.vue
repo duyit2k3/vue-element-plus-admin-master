@@ -74,6 +74,23 @@ interface InboundPendingPallet {
 
 const inboundPendingPallets = ref<InboundPendingPallet[]>([])
 
+// Trạng thái duyệt inbound từng pallet trên FE
+const currentInboundIndex = ref<number | null>(null)
+const confirmedInboundPalletIds = ref<number[]>([])
+
+const currentInboundPallet = computed<InboundPendingPallet | undefined>(() => {
+  if (currentInboundIndex.value == null) return undefined
+  const idx = currentInboundIndex.value
+  if (idx < 0 || idx >= inboundPendingPallets.value.length) return undefined
+  return inboundPendingPallets.value[idx]
+})
+
+const allInboundPalletsConfirmed = computed(() => {
+  if (!inboundPendingPallets.value.length) return false
+  const ids = inboundPendingPallets.value.map((p) => p.palletId)
+  return ids.every((id) => confirmedInboundPalletIds.value.includes(id))
+})
+
 // Thông tin chi tiết phiếu inbound & layout chi tiết (manual) để overlay hàng trên pallet inbound
 const inboundApprovalView = ref<InboundApprovalView | null>(null)
 const inboundManualLayouts = ref<Record<number, ManualStackUnitRequest[]> | null>(null)
@@ -622,6 +639,10 @@ const loadWarehouse3DData = async () => {
               rotationY: 0
             }))
 
+            // Reset trạng thái duyệt từng pallet
+            confirmedInboundPalletIds.value = []
+            currentInboundIndex.value = inboundPendingPallets.value.length ? 0 : null
+
             // Nếu chưa có filterByZone thì set theo zone của layout đầu tiên
             if (!filterByZone.value && layouts.length) {
               filterByZone.value = layouts[0].zoneId
@@ -832,7 +853,7 @@ const renderWarehouse = () => {
 
   // Render inbound pending pallets (preview, chưa commit DB)
   if (inboundMode.value && inboundPendingPallets.value.length && warehouseData.value) {
-    inboundPendingPallets.value.forEach((p) => {
+    inboundPendingPallets.value.forEach((p, idx) => {
       const zone = warehouseData.value!.zones?.find((z) => z.zoneId === p.zoneId)
       if (!zone) return
       if (filterByZone.value && zone.zoneId !== filterByZone.value) return
@@ -852,7 +873,10 @@ const renderWarehouse = () => {
         rotationY: p.rotationY ?? 0
       }
 
-      renderPallet(virtualPallet, true)
+      const isCurrentInbound =
+        currentInboundIndex.value != null && currentInboundIndex.value === idx
+
+      renderPallet(virtualPallet, true, isCurrentInbound)
 
       // Overlay hàng inbound trên pallet inbound (sử dụng metadata từ approval-view + layout chi tiết từ DB nếu có)
       if (inboundApprovalView.value) {
@@ -1100,7 +1124,7 @@ const renderRacks = () => {
   })
 }
 
-const renderPallet = (pallet: any, pendingInbound = false) => {
+const renderPallet = (pallet: any, pendingInbound = false, isCurrentInbound = false) => {
   const geometry = new THREE.BoxGeometry(
     pallet.palletLength,
     pallet.palletHeight,
@@ -1112,6 +1136,10 @@ const renderPallet = (pallet: any, pendingInbound = false) => {
   let color = hasItems ? 0xe67e22 : 0xbdc3c7
   if (pendingInbound) {
     color = 0x2ecc71
+  }
+  // Pallet inbound đang được duyệt: tô màu nổi bật hơn
+  if (pendingInbound && isCurrentInbound) {
+    color = 0xf1c40f
   }
 
   const material = new THREE.MeshPhongMaterial({ color: color })
@@ -1134,7 +1162,8 @@ const renderPallet = (pallet: any, pendingInbound = false) => {
 
   // Thêm viền để dễ quan sát biên pallet trong 3D
   const edgeGeo = new THREE.EdgesGeometry(geometry)
-  const edgeMat = new THREE.LineBasicMaterial({ color: 0x000000 })
+  const edgeColor = pendingInbound && isCurrentInbound ? 0xff0000 : 0x000000
+  const edgeMat = new THREE.LineBasicMaterial({ color: edgeColor })
   const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat)
   edgeLines.position.copy(mesh.position)
   edgeLines.rotation.copy(mesh.rotation)
@@ -1695,6 +1724,22 @@ const handleObjectClick = (userData: any) => {
   if (userData.type === 'zone') {
     showZoneDetails(userData.data)
   } else if (userData.type === 'pallet') {
+    const pallet = userData.data
+    const palletId = Number(pallet?.palletId)
+
+    // Nếu đây là pallet inbound đang chờ duyệt (preview), đồng bộ làm pallet đang duyệt
+    if (
+      inboundMode.value &&
+      userData.pendingInbound === true &&
+      Number.isFinite(palletId) &&
+      inboundPendingPallets.value.length
+    ) {
+      const idx = inboundPendingPallets.value.findIndex((p) => p.palletId === palletId)
+      if (idx !== -1) {
+        currentInboundIndex.value = idx
+      }
+    }
+
     showPalletDetails(userData.data)
   } else if (userData.type === 'rack') {
     showRackDetails(userData.data)
@@ -2386,11 +2431,67 @@ const moveSelectedInboundPalletToNearestShelf = () => {
   renderWarehouse()
 }
 
+const confirmCurrentInboundPalletAndNext = () => {
+  if (!inboundMode.value || !inboundReceiptId.value) return
+
+  if (!inboundPendingPallets.value.length) {
+    ElMessage.error('Không có pallet inbound nào để duyệt')
+    return
+  }
+
+  if (
+    currentInboundIndex.value == null ||
+    currentInboundIndex.value < 0 ||
+    currentInboundIndex.value >= inboundPendingPallets.value.length
+  ) {
+    currentInboundIndex.value = 0
+  }
+
+  const current = currentInboundPallet.value
+  if (!current) {
+    ElMessage.warning('Không tìm thấy pallet đang duyệt')
+    return
+  }
+
+  const id = current.palletId
+  if (!confirmedInboundPalletIds.value.includes(id)) {
+    confirmedInboundPalletIds.value.push(id)
+  }
+
+  const confirmedIds = confirmedInboundPalletIds.value
+  const startIndex = currentInboundIndex.value ?? 0
+
+  // Tìm pallet tiếp theo chưa được duyệt sau current index
+  let nextIndex = inboundPendingPallets.value.findIndex(
+    (p, idx) => idx > startIndex && !confirmedIds.includes(p.palletId)
+  )
+
+  // Nếu không còn pallet phía sau, thử tìm từ đầu danh sách
+  if (nextIndex === -1) {
+    nextIndex = inboundPendingPallets.value.findIndex((p) => !confirmedIds.includes(p.palletId))
+  }
+
+  if (nextIndex !== -1) {
+    currentInboundIndex.value = nextIndex
+  } else {
+    ElMessage.success(
+      'Đã duyệt qua tất cả pallet inbound. Bạn có thể bấm "Duyệt inbound tại zone" để hoàn tất.'
+    )
+  }
+}
+
 const handleApproveInboundFrom3D = async () => {
   if (!inboundMode.value || !inboundReceiptId.value) return
 
   if (!inboundPendingPallets.value.length) {
     ElMessage.error('Không có pallet inbound nào để duyệt')
+    return
+  }
+
+  if (!allInboundPalletsConfirmed.value) {
+    ElMessage.warning(
+      'Bạn cần duyệt từng pallet inbound (nhấn "Duyệt pallet hiện tại & sang pallet tiếp theo") trước khi hoàn tất.'
+    )
     return
   }
 
@@ -2633,11 +2734,35 @@ onBeforeUnmount(() => {
 
           <!-- Inbound actions inside 3D frame -->
           <div v-if="inboundMode" class="inbound-actions-overlay">
+            <div class="inbound-status" style="margin-bottom: 8px; font-size: 12px">
+              <div v-if="inboundPendingPallets.length">
+                Pallet đang duyệt:
+                <strong v-if="currentInboundPallet">#{{ currentInboundPallet.palletId }}</strong>
+                <span v-else>Chưa bắt đầu</span>
+              </div>
+              <div v-if="inboundPendingPallets.length">
+                Đã duyệt {{ confirmedInboundPalletIds.length }}/{{
+                  inboundPendingPallets.length
+                }}
+                pallet
+              </div>
+            </div>
+            <ElButton
+              size="small"
+              type="primary"
+              class="no-margin-left-btn"
+              style="width: 100%; margin-bottom: 8px"
+              @click="confirmCurrentInboundPalletAndNext"
+            >
+              <Icon icon="vi-ant-design:step-forward-outlined" />
+              Duyệt pallet hiện tại &amp; sang pallet tiếp theo
+            </ElButton>
             <ElButton
               size="small"
               type="success"
               class="no-margin-left-btn"
               style="width: 100%; margin-bottom: 8px"
+              :disabled="!allInboundPalletsConfirmed"
               @click="handleApproveInboundFrom3D"
             >
               <Icon icon="vi-ant-design:check-circle-outlined" />

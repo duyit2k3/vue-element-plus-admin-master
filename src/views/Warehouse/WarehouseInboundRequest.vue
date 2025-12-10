@@ -23,12 +23,7 @@ import {
 } from 'element-plus'
 import { Icon } from '@/components/Icon'
 import warehouseApi, { type WarehouseListItem, type WarehouseZone } from '@/api/warehouse'
-import palletApi, {
-  type PalletTemplate,
-  type PalletViewModel,
-  type CreatePalletRequest,
-  type CreatePalletFromTemplateRequest
-} from '@/api/pallet'
+import palletApi, { type PalletTemplate } from '@/api/pallet'
 import productApi, { type ProductViewModel, type CreateProductRequest } from '@/api/product'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
@@ -182,26 +177,24 @@ const loadCustomerZonesForSelectedWarehouse = async () => {
 // Pallet
 const palletTab = ref<'template' | 'custom'>('template')
 const palletTemplates = ref<PalletTemplate[]>([])
-const createdPallets = ref<PalletViewModel[]>([])
-const selectedPalletId = ref<number | undefined>(undefined)
 const loadingPalletTemplates = ref(false)
-
-const generatePalletBarcode = () => {
-  return `PAL-${Date.now()}`
-}
 
 const palletFromTemplateForm = reactive<{
   templateId: number | undefined
-  barcode: string
   palletType: string
 }>({
   templateId: undefined,
-  barcode: '',
   palletType: ''
 })
 
-const customPalletForm = reactive<CreatePalletRequest>({
-  barcode: '',
+const customPalletForm = reactive<{
+  length: number | undefined
+  width: number | undefined
+  height: number | undefined
+  maxWeight: number | undefined
+  maxStackHeight: number | undefined
+  palletType: string
+}>({
   length: 1,
   width: 1,
   height: 0.15,
@@ -221,59 +214,6 @@ const loadPalletTemplates = async () => {
     ElMessage.error('Không thể tải danh sách pallet template')
   } finally {
     loadingPalletTemplates.value = false
-  }
-}
-
-const handleSelectPalletTemplate = (templateId: number) => {
-  const tpl = palletTemplates.value.find((t) => t.templateId === templateId)
-  if (tpl) {
-    palletFromTemplateForm.palletType = tpl.palletType || ''
-  }
-}
-
-const addCreatedPallet = (pallet: PalletViewModel) => {
-  createdPallets.value.push(pallet)
-  selectedPalletId.value = pallet.palletId
-  ElMessage.success('Tạo pallet thành công')
-}
-
-const createPalletFromTemplate = async () => {
-  if (!palletFromTemplateForm.templateId) {
-    ElMessage.error('Vui lòng chọn template pallet')
-    return
-  }
-  if (!palletFromTemplateForm.barcode) {
-    palletFromTemplateForm.barcode = generatePalletBarcode()
-  }
-  const payload: CreatePalletFromTemplateRequest = {
-    barcode: palletFromTemplateForm.barcode,
-    palletType: palletFromTemplateForm.palletType || undefined
-  }
-  try {
-    const res = await palletApi.createPalletFromTemplate(palletFromTemplateForm.templateId, payload)
-    if (res && (res.statusCode === 201 || res.statusCode === 200 || res.code === 0)) {
-      addCreatedPallet(res.data as PalletViewModel)
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.message || 'Lỗi khi tạo pallet từ template')
-  }
-}
-
-const createCustomPallet = async () => {
-  if (!customPalletForm.barcode) {
-    customPalletForm.barcode = generatePalletBarcode()
-  }
-  if (!customPalletForm.length || !customPalletForm.width) {
-    ElMessage.error('Chiều dài và chiều rộng pallet là bắt buộc')
-    return
-  }
-  try {
-    const res = await palletApi.createPallet(customPalletForm)
-    if (res && (res.statusCode === 201 || res.statusCode === 200 || res.code === 0)) {
-      addCreatedPallet(res.data as PalletViewModel)
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.message || 'Lỗi khi tạo pallet tùy chỉnh')
   }
 }
 
@@ -335,7 +275,7 @@ const getProductItemType = (p: ProductViewModel) => {
 }
 
 const filteredProducts = computed(() => {
-  // Nếu chưa có thông tin zone, tạm thời trả về toàn bộ products
+  // Nếu chưa có thông tin zone, tạm thởi trả về toàn bộ products
   if (!hasAnyZone.value) {
     return products.value
   }
@@ -399,6 +339,7 @@ type InboundItemWithDimensions = InboundItemRequest & {
 }
 
 const items = ref<InboundItemWithDimensions[]>([])
+const pendingAutoItem = ref<InboundItemWithDimensions | null>(null)
 
 const stackMode = ref<'auto' | 'manual'>('auto')
 
@@ -432,9 +373,9 @@ const autoStackTemplates: AutoStackTemplate[] = [
 ]
 const showAutoLayoutDialog = ref(false)
 const selectedAutoLayoutId = ref<string | null>(autoStackTemplates[0]?.id ?? null)
+const editingAutoLayoutItemIndex = ref<number | null>(null)
 
 const itemForm = reactive<{
-  palletId: number | undefined
   quantity: number
   manufacturingDate: string
   expiryDate: string | undefined
@@ -445,7 +386,6 @@ const itemForm = reactive<{
   width: number | undefined
   height: number | undefined
 }>({
-  palletId: undefined,
   quantity: 1,
   manufacturingDate: '',
   expiryDate: undefined,
@@ -515,20 +455,66 @@ const setAutoPreviewContainer = (id: string, el: unknown) => {
 }
 
 const initAutoPreviewScenes = () => {
-  const previewItem = items.value[0]
-  if (!previewItem) return
+  let product: ProductViewModel | undefined
+  let palletLength: number
+  let palletWidth: number
+  let palletHeight: number
+  let qty = 1
 
-  const pallet = createdPallets.value.find((p) => p.palletId === previewItem.palletId)
-  const product = products.value.find((p) => p.productId === previewItem.productId)
-  if (!pallet || !product) return
+  const editingIndex = editingAutoLayoutItemIndex.value
+
+  if (editingIndex != null && editingIndex >= 0 && editingIndex < items.value.length) {
+    const item = items.value[editingIndex]
+    product = products.value.find((p) => p.productId === item.productId)
+    if (!product) return
+
+    qty = Math.max(1, item.quantity)
+
+    if (item.palletTemplateId) {
+      const tpl = palletTemplates.value.find((t) => t.templateId === item.palletTemplateId)
+      if (!tpl) return
+      palletLength = tpl.length
+      palletWidth = tpl.width
+      palletHeight = tpl.height
+    } else {
+      const l = item.palletLength
+      const w = item.palletWidth
+      const h = item.palletHeight
+      if (!l || !w || !h) return
+      palletLength = l
+      palletWidth = w
+      palletHeight = h
+    }
+  } else {
+    if (!currentProductId.value) return
+
+    product = products.value.find((p) => p.productId === currentProductId.value)
+    if (!product) return
+
+    if (palletTab.value === 'template') {
+      if (!palletFromTemplateForm.templateId) return
+      const tpl = palletTemplates.value.find(
+        (t) => t.templateId === palletFromTemplateForm.templateId
+      )
+      if (!tpl) return
+      palletLength = tpl.length
+      palletWidth = tpl.width
+      palletHeight = tpl.height
+    } else {
+      const l = customPalletForm.length
+      const w = customPalletForm.width
+      const h = customPalletForm.height
+      if (!l || !w || !h) return
+      palletLength = l
+      palletWidth = w
+      palletHeight = h
+    }
+
+    qty = Math.max(1, itemForm.quantity)
+  }
 
   const itemType = getProductItemType(product)
   const isBag = itemType === 'bag'
-
-  const palletLength = pallet.length
-  const palletWidth = pallet.width
-  const palletHeight = pallet.height
-  const qty = Math.max(1, previewItem.quantity)
 
   autoPreviewBlockDims.value = {}
 
@@ -736,10 +722,23 @@ const animateAutoPreviews = () => {
 }
 
 const openAutoLayoutPreview = async () => {
-  if (!items.value.length) {
-    ElMessage.error('Chưa có hàng nào trong yêu cầu để xem bố trí trên pallet')
+  if (!currentProductId.value) {
+    ElMessage.error('Vui lòng chọn hoặc tạo sản phẩm trước')
     return
   }
+
+  if (palletTab.value === 'template') {
+    if (!palletFromTemplateForm.templateId) {
+      ElMessage.error('Vui lòng chọn template pallet trước')
+      return
+    }
+  } else {
+    if (!customPalletForm.length || !customPalletForm.width || !customPalletForm.height) {
+      ElMessage.error('Vui lòng nhập đầy đủ kích thước pallet trước')
+      return
+    }
+  }
+
   showAutoLayoutDialog.value = true
   await nextTick()
   initAutoPreviewScenes()
@@ -747,6 +746,43 @@ const openAutoLayoutPreview = async () => {
 
 const handleSelectAutoTemplate = (id: string) => {
   selectedAutoLayoutId.value = id
+}
+
+const handleSelectPalletTemplate = (templateId: string | number) => {
+  // Template ID is already bound via v-model, this handler can be used for additional logic if needed
+  palletFromTemplateForm.templateId =
+    typeof templateId === 'string' ? Number(templateId) : templateId
+}
+
+const confirmAutoLayoutChoice = () => {
+  if (!selectedAutoLayoutId.value) {
+    ElMessage.error('Vui lòng chọn một kiểu xếp')
+    return
+  }
+  if (pendingAutoItem.value) {
+    pendingAutoItem.value.autoStackTemplate = selectedAutoLayoutId.value as
+      | 'straight'
+      | 'brick'
+      | 'cross'
+    items.value.push(pendingAutoItem.value)
+    pendingAutoItem.value = null
+
+    // Reset form cho lần nhập tiếp theo
+    itemForm.quantity = 1
+    itemForm.manufacturingDate = ''
+    itemForm.expiryDate = undefined
+    itemForm.unitPrice = 0
+    itemForm.totalAmount = 0
+    itemForm.batchNumber = ''
+  } else if (editingAutoLayoutItemIndex.value != null) {
+    const idx = editingAutoLayoutItemIndex.value
+    const item = items.value[idx]
+    if (item) {
+      item.autoStackTemplate = selectedAutoLayoutId.value as 'straight' | 'brick' | 'cross'
+    }
+  }
+  editingAutoLayoutItemIndex.value = null
+  showAutoLayoutDialog.value = false
 }
 
 onBeforeUnmount(() => {
@@ -769,8 +805,22 @@ const productNameMap = computed<Record<number, string>>(() => {
   return map
 })
 
-const currentPallet = computed<PalletViewModel | undefined>(() => {
-  return createdPallets.value.find((p) => p.palletId === selectedPalletId.value)
+const currentPalletSummary = computed(() => {
+  if (palletTab.value === 'template') {
+    if (!palletFromTemplateForm.templateId) return ''
+    const tpl = palletTemplates.value.find(
+      (t) => t.templateId === palletFromTemplateForm.templateId
+    )
+    if (!tpl) return ''
+    const type = palletFromTemplateForm.palletType || tpl.palletType || ''
+    const base = `${tpl.templateName} (${tpl.length}×${tpl.width}×${tpl.height}m)`
+    return type ? `${base} - ${type}` : base
+  }
+
+  if (!customPalletForm.length || !customPalletForm.width) return ''
+  const h = customPalletForm.height ?? 0.15
+  const base = `Pallet tùy chỉnh (${customPalletForm.length}×${customPalletForm.width}×${h}m)`
+  return customPalletForm.palletType ? `${base} - ${customPalletForm.palletType}` : base
 })
 
 const quantityLabel = computed(() => {
@@ -782,14 +832,20 @@ const addItemToList = () => {
     ElMessage.error('Vui lòng chọn kho')
     return
   }
-  const palletId = selectedPalletId.value
-  if (!palletId) {
-    ElMessage.error('Vui lòng tạo và chọn pallet')
-    return
-  }
   if (!currentProductId.value) {
     ElMessage.error('Vui lòng chọn hoặc tạo sản phẩm')
     return
+  }
+  if (palletTab.value === 'template') {
+    if (!palletFromTemplateForm.templateId) {
+      ElMessage.error('Vui lòng chọn template pallet')
+      return
+    }
+  } else {
+    if (!customPalletForm.length || !customPalletForm.width) {
+      ElMessage.error('Chiều dài và chiều rộng pallet là bắt buộc')
+      return
+    }
   }
   if (!itemForm.manufacturingDate) {
     ElMessage.error('Vui lòng chọn ngày sản xuất')
@@ -800,13 +856,33 @@ const addItemToList = () => {
     return
   }
 
-  if (items.value.some((it) => it.palletId === palletId)) {
-    ElMessage.error('Mỗi pallet chỉ được thêm một hàng hóa trong một yêu cầu')
-    return
+  let palletTemplateId: number | undefined
+  let palletType: string | undefined
+  let palletLength: number | undefined
+  let palletWidth: number | undefined
+  let palletHeight: number | undefined
+  let palletMaxWeight: number | undefined
+  let palletMaxStackHeight: number | undefined
+
+  if (palletTab.value === 'template') {
+    palletTemplateId = palletFromTemplateForm.templateId as number
+    palletType = palletFromTemplateForm.palletType || undefined
+  } else {
+    palletLength = customPalletForm.length as number
+    palletWidth = customPalletForm.width as number
+    palletHeight = customPalletForm.height ?? 0.15
+    palletMaxWeight = customPalletForm.maxWeight
+    palletMaxStackHeight = customPalletForm.maxStackHeight
+    palletType = customPalletForm.palletType || undefined
+  }
+
+  let autoStackTemplate: 'straight' | 'brick' | 'cross' | null | undefined
+  if (stackMode.value === 'auto') {
+    // Sẽ gán sau khi user xác nhận layout trong dialog
+    autoStackTemplate = null
   }
 
   const payload: InboundItemWithDimensions = {
-    palletId,
     productId: currentProductId.value,
     quantity: itemForm.quantity,
     manufacturingDate: itemForm.manufacturingDate,
@@ -816,9 +892,27 @@ const addItemToList = () => {
     batchNumber: itemForm.batchNumber || undefined,
     length: itemForm.length,
     width: itemForm.width,
-    height: itemForm.height
+    height: itemForm.height,
+    stackMode: stackMode.value,
+    autoStackTemplate,
+    palletTemplateId,
+    palletType,
+    palletLength,
+    palletWidth,
+    palletHeight,
+    palletMaxWeight,
+    palletMaxStackHeight
   }
 
+  // Nếu đang ở chế độ hệ thống gợi ý, mở dialog chọn layout trước khi thêm vào danh sách
+  if (stackMode.value === 'auto') {
+    pendingAutoItem.value = payload
+    editingAutoLayoutItemIndex.value = null
+    void openAutoLayoutPreview()
+    return
+  }
+
+  // Chế độ manual: thêm thẳng vào danh sách
   items.value.push(payload)
 
   // Reset một phần form cho lần nhập tiếp theo
@@ -868,12 +962,8 @@ const submitRequest = async () => {
       )
       items.value = []
       notes.value = ''
-      selectedPalletId.value = undefined
-      createdPallets.value = []
       palletFromTemplateForm.templateId = undefined
-      palletFromTemplateForm.barcode = ''
       palletFromTemplateForm.palletType = ''
-      customPalletForm.barcode = ''
       customPalletForm.length = 1
       customPalletForm.width = 1
       customPalletForm.height = 0.15
@@ -901,12 +991,7 @@ const handleSubmitClick = async () => {
     ElMessage.error('Vui lòng thêm ít nhất một hàng hóa')
     return
   }
-
-  if (stackMode.value === 'auto') {
-    await openAutoLayoutPreview()
-  } else {
-    await submitRequest()
-  }
+  await submitRequest()
 }
 
 onMounted(() => {
@@ -981,12 +1066,6 @@ onMounted(() => {
                 <ElFormItem label="Loại pallet">
                   <ElInput v-model="palletFromTemplateForm.palletType" placeholder="Loại pallet" />
                 </ElFormItem>
-                <ElFormItem>
-                  <ElButton type="primary" @click="createPalletFromTemplate">
-                    <Icon icon="vi-ant-design:plus-square-outlined" />
-                    Tạo pallet từ template
-                  </ElButton>
-                </ElFormItem>
               </ElForm>
             </ElTabPane>
             <ElTabPane label="Tùy chỉnh" name="custom">
@@ -1020,27 +1099,9 @@ onMounted(() => {
                 <ElFormItem label="Loại pallet">
                   <ElInput v-model="customPalletForm.palletType" placeholder="Loại pallet" />
                 </ElFormItem>
-                <ElFormItem>
-                  <ElButton type="primary" @click="createCustomPallet">
-                    <Icon icon="vi-ant-design:plus-square-outlined" />
-                    Tạo pallet tùy chỉnh
-                  </ElButton>
-                </ElFormItem>
               </ElForm>
             </ElTabPane>
           </ElTabs>
-
-          <div v-if="createdPallets.length" class="mt-10">
-            <div class="text-sm mb-5">Pallet đã tạo:</div>
-            <ElSelect v-model="selectedPalletId" placeholder="Chọn pallet để sử dụng" filterable>
-              <ElOption
-                v-for="p in createdPallets"
-                :key="p.palletId"
-                :label="`${p.barcode} (${p.length}×${p.width}×${p.height}m)`"
-                :value="p.palletId"
-              />
-            </ElSelect>
-          </div>
         </ElCard>
       </ElCol>
 
@@ -1147,11 +1208,10 @@ onMounted(() => {
       <ElForm label-width="180px" class="mb-20px">
         <ElFormItem label="Pallet sử dụng" required>
           <div class="product-summary">
-            <span v-if="currentPallet">
-              {{ currentPallet.barcode }}
-              ({{ currentPallet.length }}×{{ currentPallet.width }}×{{ currentPallet.height }}m)
+            <span v-if="currentPalletSummary">
+              {{ currentPalletSummary }}
             </span>
-            <span v-else class="text-gray">Chưa tạo hoặc chọn pallet</span>
+            <span v-else class="text-gray">Chưa chọn template hoặc nhập thông số pallet</span>
           </div>
         </ElFormItem>
         <ElFormItem label="Sản phẩm" required>
@@ -1230,6 +1290,12 @@ onMounted(() => {
         <ElTableColumn label="Sản phẩm">
           <template #default="scope">
             {{ productNameMap[scope.row.productId] || scope.row.productId }}
+          </template>
+        </ElTableColumn>
+        <ElTableColumn label="Cách xếp" width="140">
+          <template #default="scope">
+            <span v-if="scope.row.stackMode === 'manual'">Bạn tự xếp</span>
+            <span v-else>Hệ thống gợi ý</span>
           </template>
         </ElTableColumn>
         <ElTableColumn prop="quantity" label="Số lượng" width="100" />
@@ -1342,10 +1408,8 @@ onMounted(() => {
         </div>
       </div>
       <template #footer>
-        <ElButton @click="showAutoLayoutDialog = false">Hủy</ElButton>
-        <ElButton type="primary" :loading="submitting" @click="submitRequest">
-          Tạo yêu cầu với kiểu xếp này
-        </ElButton>
+        <ElButton @click="showAutoLayoutDialog = false">Đóng</ElButton>
+        <ElButton type="primary" @click="confirmAutoLayoutChoice"> Chọn kiểu xếp này </ElButton>
       </template>
     </ElDialog>
   </div>

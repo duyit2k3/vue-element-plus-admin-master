@@ -18,7 +18,6 @@ import inboundApi, {
   type InboundApprovalView,
   type InboundApprovalItem,
   type PreferredPalletLayout,
-  type InboundOptimizeLayoutView,
   type ManualStackLayoutRequest,
   type ManualStackLayoutItemRequest,
   type ManualStackUnitRequest
@@ -32,7 +31,6 @@ const router = useRouter()
 
 const loading = ref(true)
 const approving = ref(false)
-const optimizing = ref(false)
 const rejecting = ref(false)
 const approvalData = ref<InboundApprovalView | null>(null)
 const selectedItem = ref<InboundApprovalItem | null>(null)
@@ -40,7 +38,6 @@ const canvasContainer = ref<HTMLDivElement>()
 
 // Lưu priority (theo trục X trong viewer) cho từng pallet
 const palletLayouts = ref<Record<number, number>>({})
-const optimizeResult = ref<InboundOptimizeLayoutView | null>(null)
 const lastPreferredLayouts = ref<PreferredPalletLayout[] | null>(null)
 
 const manualLayouts = ref<Record<number, ManualStackUnitRequest[]>>({})
@@ -67,18 +64,23 @@ let pointerListenersAttached = false
 
 const receiptId = ref<number | null>(null)
 
-const isManualMode = computed(() => approvalData.value?.stackMode?.toLowerCase() === 'manual')
+// Chế độ manual cho pallet đang chọn (dựa trên stackMode per-item)
+const isManualMode = computed(() => {
+  const item = selectedItem.value
+  const mode = item?.stackMode?.toLowerCase()
+  return mode === 'manual'
+})
 
+// Nếu có bất kỳ pallet ở chế độ manual chưa có layout đầy đủ/được xác nhận thì không cho duyệt
 const disableApproveButton = computed(() => {
-  if (!isManualMode.value || !approvalData.value) {
-    return false
-  }
+  if (!approvalData.value) return false
 
   return approvalData.value.items.some((item) => {
+    const mode = item.stackMode?.toLowerCase()
+    if (mode !== 'manual') return false
+
     const units = manualLayouts.value[item.inboundItemId]
-    if (!units || !units.length) {
-      return false
-    }
+    if (!units || !units.length) return true
     return !manualLayerConfirmed.value[item.inboundItemId]
   })
 })
@@ -1016,50 +1018,20 @@ const onResize = () => {
   renderer.setSize(width, height)
 }
 
-const handleOptimize = async () => {
-  if (!receiptId.value || !approvalData.value) return
-  optimizing.value = true
-  try {
-    // Lấy priority hiện tại theo vị trí kéo thả (nếu có) cho từng pallet
-    const layouts: PreferredPalletLayout[] = []
-    const seen = new Set<number>()
-    for (const item of approvalData.value.items) {
-      if (seen.has(item.palletId)) continue
-      seen.add(item.palletId)
-      const priority = palletLayouts.value[item.palletId]
-      layouts.push({ palletId: item.palletId, priority })
-    }
-
-    const payload = layouts.length
-      ? { preferredLayouts: layouts, forceUsePreferredLayout: true }
-      : { forceUsePreferredLayout: true }
-
-    const res = await inboundApi.previewApproveInboundLayout(receiptId.value, payload)
-    if (res.statusCode === 200 || res.code === 0) {
-      optimizeResult.value = res.data
-      if (layouts.length) {
-        lastPreferredLayouts.value = layouts
-      }
-      ElMessage.success('Tối ưu layout thành công')
-    } else {
-      ElMessage.error(res.message || 'Không thể tối ưu layout')
-    }
-  } catch (e) {
-    ElMessage.error('Lỗi khi tối ưu layout')
-  } finally {
-    optimizing.value = false
-  }
-}
-
 const handleApprove = async () => {
   if (!receiptId.value || !approvalData.value) return
   approving.value = true
   try {
-    // Nếu ở chế độ tự xếp, lưu layout chi tiết trước khi duyệt
-    if (isManualMode.value) {
+    // Nếu có pallet ở chế độ tự xếp (manual), yêu cầu phải có layout đầy đủ & đã xác nhận
+    const hasManualItem = approvalData.value.items.some(
+      (item) => item.stackMode?.toLowerCase() === 'manual'
+    )
+
+    if (hasManualItem) {
       const hasUnconfirmed = approvalData.value.items.some((item) => {
+        if (item.stackMode?.toLowerCase() !== 'manual') return false
         const units = manualLayouts.value[item.inboundItemId]
-        if (!units || !units.length) return false
+        if (!units || !units.length) return true
         return !manualLayerConfirmed.value[item.inboundItemId]
       })
 
@@ -1122,7 +1094,6 @@ const handleApprove = async () => {
       return
     }
 
-    optimizeResult.value = previewRes.data
     if (layouts.length) {
       lastPreferredLayouts.value = layouts
     }
@@ -1240,10 +1211,6 @@ const handleBack = () => {
             v-if="approvalData?.status?.toLowerCase() === 'pending'"
             class="header-actions__main"
           >
-            <ElButton type="success" :loading="optimizing" @click="handleOptimize">
-              <Icon icon="vi-ep:magic-stick" />
-              Tối ưu tự động
-            </ElButton>
             <ElButton
               type="primary"
               :loading="approving"
@@ -1282,6 +1249,12 @@ const handleBack = () => {
             <ElTableColumn type="index" width="50" />
             <ElTableColumn prop="productCode" label="Mã SP" width="120" />
             <ElTableColumn prop="productName" label="Tên SP" min-width="160" />
+            <ElTableColumn label="Cách xếp" width="130">
+              <template #default="{ row }">
+                <span v-if="row.stackMode === 'manual'">Bạn tự xếp</span>
+                <span v-else>Hệ thống gợi ý</span>
+              </template>
+            </ElTableColumn>
             <ElTableColumn prop="quantity" label="SL" width="70" />
             <ElTableColumn label="Loại" width="90">
               <template #default="{ row }">
@@ -1377,36 +1350,6 @@ const handleBack = () => {
               <div class="manual-tools__hint">
                 Chế độ <strong>tự xếp trên pallet</strong>: dùng các nút ở góc dưới bên trái viewer
                 3D để thêm hàng, reset và xác nhận tầng, sau đó kéo thả từng bao/thùng trên pallet.
-              </div>
-            </div>
-            <div v-else class="manual-tools__hint auto-mode-hint">
-              Phiếu này đang dùng <strong>cách xếp do hệ thống gợi ý</strong>. Bạn có thể nhấn
-              <strong>"Tối ưu tự động"</strong> ở phía trên để hệ thống gợi ý zone/kệ cho pallet.
-            </div>
-
-            <div>
-              <strong>Layout đề xuất (nếu có):</strong>
-              <div v-if="optimizeResult && optimizeResult.layouts.length" class="mt-2">
-                <ElTable :data="optimizeResult.layouts" size="small" height="220" :border="true">
-                  <ElTableColumn prop="palletId" label="Pallet" width="70" />
-                  <ElTableColumn prop="zoneId" label="Zone" width="70" />
-                  <ElTableColumn prop="shelfId" label="Vị trí" min-width="140">
-                    <template #default="{ row }">
-                      <span v-if="row.isGround">Đất (zone {{ row.zoneId }})</span>
-                      <span v-else-if="row.shelfId">Kệ #{{ row.shelfId }}</span>
-                      <span v-else>Khác</span>
-                    </template>
-                  </ElTableColumn>
-                  <ElTableColumn prop="stackLevel" label="Tầng" width="60" />
-                  <ElTableColumn label="Vị trí (X,Z)" min-width="110">
-                    <template #default="{ row }">
-                      ({{ row.positionX.toFixed(2) }}, {{ row.positionZ.toFixed(2) }})
-                    </template>
-                  </ElTableColumn>
-                </ElTable>
-              </div>
-              <div v-else class="mt-2 text-muted">
-                Nhấn "Tối ưu tự động" để xem gợi ý zone/stack cho toàn bộ pallet.
               </div>
             </div>
           </div>
