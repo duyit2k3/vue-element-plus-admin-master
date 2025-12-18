@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
+import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
 import { ContentWrap } from '@/components/ContentWrap'
 import {
   ElCard,
@@ -16,7 +16,11 @@ import {
 import { Icon } from '@/components/Icon'
 import { Qrcode } from '@/components/Qrcode'
 import { useRouter, useRoute } from 'vue-router'
-import warehouseApi, { type Warehouse3DData } from '@/api/warehouse'
+import warehouseApi, {
+  type Warehouse3DData,
+  type ItemAllocation,
+  type WarehouseListItem
+} from '@/api/warehouse'
 import inboundApi, {
   type InboundOptimizeLayoutView,
   type PreferredPalletLayout,
@@ -24,6 +28,12 @@ import inboundApi, {
   type InboundApprovalItem,
   type ManualStackUnitRequest
 } from '@/api/inbound'
+import outboundApi, {
+  type OutboundRequestDetail,
+  type OutboundPalletPickViewModel,
+  type OutboundPickingProgressItem
+} from '@/api/outbound'
+import { findPathToPallet, type PathPoint } from '@/utils/pathfinding'
 import { useUserStore } from '@/store/modules/user'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
@@ -34,6 +44,9 @@ const loading = ref(true)
 const warehouseData = ref<Warehouse3DData | null>(null)
 const container = ref<HTMLDivElement>()
 const userStore = useUserStore()
+const warehousesFor3D = ref<WarehouseListItem[]>([])
+const selectedWarehouseIdFor3D = ref<number | undefined>(undefined)
+const loadingWarehousesFor3D = ref(false)
 
 // Inbound approval (preview) mode
 // Bật khi:
@@ -44,7 +57,7 @@ const inboundMode = computed(() => {
   return route.query.mode === 'inbound-approval'
 })
 
-// receiptId ưu tiên lấy từ params, fallback query
+// receiptId inbound ưu tiên lấy từ params, fallback query
 const inboundReceiptId = computed(() => {
   const fromParams = route.params.receiptId
   if (fromParams != null) {
@@ -58,6 +71,59 @@ const inboundReceiptId = computed(() => {
   if (!Number.isFinite(n2) || n2 <= 0) return undefined
   return n2
 })
+
+// receiptId outbound lấy từ params hoặc query (route WarehouseOutbound3DApproval)
+const outboundReceiptId = computed(() => {
+  const fromParams = route.params.receiptId
+  if (fromParams != null) {
+    const n = Array.isArray(fromParams) ? Number(fromParams[0]) : Number(fromParams)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+
+  const raw = route.query.receiptId
+  if (!raw) return undefined
+  const n2 = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
+  if (!Number.isFinite(n2) || n2 <= 0) return undefined
+  return n2
+})
+
+// receiptId outbound đang được sử dụng trong 3D (có thể khác route params nếu chọn phiếu khác trong panel)
+const selectedOutboundReceiptId = ref<number | undefined>(undefined)
+const effectiveOutboundReceiptId = computed<number | undefined>(() => {
+  return selectedOutboundReceiptId.value ?? outboundReceiptId.value
+})
+
+const outboundPaths = ref<{ palletId: number; points: PathPoint[] }[]>([])
+const outboundPickedPalletIds = ref<number[]>([])
+const outboundTargetPallets = ref<
+  {
+    palletId: number
+    barcode?: string | null
+    items: any[]
+    hasPhysicalPallet?: boolean
+  }[]
+>([])
+const outboundPickingRequests = ref<OutboundPickingProgressItem[]>([])
+const loadingOutboundPicking = ref(false)
+const highlightedOutboundPalletId = ref<number | null>(null)
+const hoveredOutboundPathPalletId = ref<number | null>(null)
+
+const currentOutboundPalletItems = computed<any[]>(() => {
+  if (!outbound3DMode.value) return []
+  const pid = highlightedOutboundPalletId.value
+  if (pid == null) return []
+  const p = outboundTargetPallets.value.find((x) => x.palletId === pid)
+  return (p?.items as any[]) || []
+})
+
+const getOutboundPalletRequestedQty = (p: { items?: any[] }) => {
+  if (!p || !Array.isArray(p.items)) return 0
+  return p.items.reduce((sum, it) => {
+    const q = Number((it as any).quantity ?? 0)
+    if (!Number.isFinite(q)) return sum
+    return sum + q
+  }, 0)
+}
 const inboundPreviewResult = ref<InboundOptimizeLayoutView | null>(null)
 
 // Pallet inbound đang chờ duyệt (preview, chưa commit DB)
@@ -93,6 +159,7 @@ const allInboundPalletsConfirmed = computed(() => {
 
 // Thông tin chi tiết phiếu inbound & layout chi tiết (manual) để overlay hàng trên pallet inbound
 const inboundApprovalView = ref<InboundApprovalView | null>(null)
+const outboundDetail = ref<OutboundRequestDetail | null>(null)
 const inboundManualLayouts = ref<Record<number, ManualStackUnitRequest[]> | null>(null)
 
 const warehouseId = computed(() => Number(route.params.id))
@@ -101,6 +168,76 @@ const canCreateInbound = computed(() => userRole.value === 'customer')
 const canViewInbound = computed(() =>
   ['customer', 'warehouse_owner', 'admin'].includes(userRole.value)
 )
+const outbound3DMode = computed(() => route.name === 'WarehouseOutbound3DApproval')
+const canMarkOutboundPicked = computed(
+  () => outbound3DMode.value && ['warehouse_owner', 'admin'].includes(userRole.value)
+)
+
+const loadWarehousesFor3D = async () => {
+  loadingWarehousesFor3D.value = true
+  try {
+    const userInfo = userStore.getUserInfo
+    if (!userInfo) return
+
+    let res: any
+    if (userRole.value === 'customer') {
+      res = await (warehouseApi as any).getWarehousesByCustomer(userInfo.accountId!)
+    } else if (userRole.value === 'warehouse_owner') {
+      res = await warehouseApi.getWarehousesByOwner(userInfo.accountId!)
+    } else {
+      res = await warehouseApi.getAllWarehouses()
+    }
+
+    if (res && (res.statusCode === 200 || res.code === 0)) {
+      let list = (res.data || []) as WarehouseListItem[]
+
+      if (userRole.value === 'customer' || userRole.value === 'warehouse_owner') {
+        const map = new Map<number, WarehouseListItem>()
+        list.forEach((w) => {
+          if (!map.has(w.warehouseId)) {
+            map.set(w.warehouseId, w)
+          }
+        })
+        list = Array.from(map.values())
+      }
+
+      warehousesFor3D.value = list
+
+      if (!selectedWarehouseIdFor3D.value && list.length > 0) {
+        const fromRouteId = warehouseId.value
+        const matched = list.find((w) => w.warehouseId === fromRouteId)
+        selectedWarehouseIdFor3D.value = matched?.warehouseId ?? list[0].warehouseId
+
+        if (
+          selectedWarehouseIdFor3D.value &&
+          selectedWarehouseIdFor3D.value !== warehouseId.value &&
+          outbound3DMode.value
+        ) {
+          push({
+            name: 'WarehouseOutbound3DApproval',
+            params: { id: selectedWarehouseIdFor3D.value }
+          })
+        }
+      }
+    }
+  } catch {
+    // ignore, vẫn có thể xem kho hiện tại
+  } finally {
+    loadingWarehousesFor3D.value = false
+  }
+}
+
+const handleWarehouseChange3D = (val: number | undefined) => {
+  const n = Number(val)
+  if (!Number.isFinite(n) || n <= 0) return
+  selectedWarehouseIdFor3D.value = n
+  if (selectedWarehouseIdFor3D.value !== warehouseId.value) {
+    push({
+      name: 'WarehouseOutbound3DApproval',
+      params: { id: selectedWarehouseIdFor3D.value }
+    })
+  }
+}
 
 const goToCreateInbound = () => {
   const query: Record<string, string> = {
@@ -211,16 +348,6 @@ const rotateSelectedInboundPallet = () => {
     return
   }
 
-  console.log('[Inbound3D] rotateSelectedInboundPallet', {
-    palletId: pending.palletId,
-    previousRotation: currentRotation,
-    newRotation,
-    baseX,
-    baseZ,
-    zoneId: pending.zoneId,
-    shelfId: pending.shelfId
-  })
-
   const updated = {
     ...pending,
     rotationY: newRotation
@@ -259,6 +386,21 @@ const buildVirtualInboundPallet = (pending: InboundPendingPallet) => {
     palletQrContent: null
   }
 }
+
+watch(
+  () => route.params.id,
+  () => {
+    const raw = route.params.id
+    const n = Array.isArray(raw) ? Number(raw[0]) : Number(raw)
+    selectedWarehouseIdFor3D.value = Number.isFinite(n) ? n : undefined
+    if (selectedWarehouseIdFor3D.value) {
+      void loadWarehouse3DData()
+      if (outbound3DMode.value) {
+        void loadOutboundPickingRequests()
+      }
+    }
+  }
+)
 
 const getPalletSizeForPalletId = (palletId: number) => {
   if (!warehouseData.value) return null
@@ -360,13 +502,6 @@ const hasGroundCollision = (
     const rMinZ = rack.positionZ
     const rMaxZ = rack.positionZ + rack.width
     if (rectsOverlap(minX, maxX, minZ, maxZ, rMinX, rMaxX, rMinZ, rMaxZ)) {
-      console.debug('[Inbound3D] Ground collision with rack', {
-        palletId,
-        zoneId,
-        rackId: rack.rackId,
-        baseX,
-        baseZ
-      })
       collided = true
     }
   })
@@ -388,13 +523,6 @@ const hasGroundCollision = (
     const pMinZ = p.positionZ
     const pMaxZ = p.positionZ + size.width
     if (rectsOverlap(minX, maxX, minZ, maxZ, pMinX, pMaxX, pMinZ, pMaxZ)) {
-      console.debug('[Inbound3D] Ground collision with existing pallet', {
-        palletId,
-        otherPalletId: p.palletId,
-        zoneId,
-        baseX,
-        baseZ
-      })
       collided = true
     }
   })
@@ -410,13 +538,6 @@ const hasGroundCollision = (
     if (!size) return
     const other = getPalletAabb(p.positionX, p.positionZ, size.length, size.width, p.rotationY)
     if (rectsOverlap(minX, maxX, minZ, maxZ, other.minX, other.maxX, other.minZ, other.maxZ)) {
-      console.debug('[Inbound3D] Ground collision with inbound preview pallet', {
-        palletId,
-        otherPalletId: p.palletId,
-        zoneId,
-        baseX,
-        baseZ
-      })
       collided = true
     }
   })
@@ -514,10 +635,16 @@ const goToViewInbound = () => {
 }
 
 // Quay lại: nếu đang ở màn duyệt inbound 3D thì quay về màn duyệt yêu cầu nhập kho,
+// nếu ở màn outbound 3D thì quay về chi tiết phiếu xuất,
 // ngược lại quay về chi tiết kho như cũ
 const goBackFrom3D = () => {
   if (inboundMode.value && inboundReceiptId.value) {
     push({ path: `/warehouse/inbound-request/${inboundReceiptId.value}/approval` })
+  } else if (route.name === 'WarehouseOutbound3DApproval' && outboundReceiptId.value) {
+    push({
+      path: `/warehouse/outbound-request/${outboundReceiptId.value}/detail`,
+      query: { warehouseId: String(warehouseId.value) }
+    })
   } else {
     push(`/warehouse/${warehouseId.value}/detail`)
   }
@@ -552,7 +679,6 @@ const palletDetail = ref<any | null>(null)
 const palletDetailItems = ref<any[]>([])
 const showPalletQr = ref(false)
 const palletQrText = ref('')
-
 // Customer list
 const customers = computed(() => {
   if (!warehouseData.value?.zones) return []
@@ -606,10 +732,64 @@ function getCurrentZoneIdForInbound(): number | undefined {
   return getZoneIdFromQuery()
 }
 
+const syncSelectedOutboundReceiptAfterPickingRequestsChange = async () => {
+  if (!outbound3DMode.value) return
+
+  const list = outboundPickingRequests.value || []
+  const currentId = effectiveOutboundReceiptId.value
+
+  const hasCurrent =
+    typeof currentId === 'number' &&
+    Number.isFinite(currentId) &&
+    list.some((r) => r.receiptId === currentId)
+
+  if (hasCurrent) {
+    selectedOutboundReceiptId.value = currentId
+    return
+  }
+
+  if (list.length) {
+    const first = list[0]
+    if (first && typeof first.receiptId === 'number' && Number.isFinite(first.receiptId)) {
+      selectedOutboundReceiptId.value = first.receiptId
+      await loadOutboundDataForReceipt(first.receiptId)
+    }
+  } else {
+    selectedOutboundReceiptId.value = undefined
+    outboundDetail.value = null
+    outboundTargetPallets.value = []
+    outboundPaths.value = []
+    outboundPickedPalletIds.value = []
+    highlightedOutboundPalletId.value = null
+  }
+}
+
+const loadOutboundPickingRequests = async () => {
+  if (!outbound3DMode.value) return
+  loadingOutboundPicking.value = true
+  try {
+    const res = await outboundApi.getOutboundPickingRequests({ warehouseId: warehouseId.value })
+    if (res.statusCode === 200 || res.code === 0) {
+      outboundPickingRequests.value = (res.data || []) as OutboundPickingProgressItem[]
+    } else {
+      outboundPickingRequests.value = []
+    }
+  } catch {
+    outboundPickingRequests.value = []
+  } finally {
+    loadingOutboundPicking.value = false
+    await syncSelectedOutboundReceiptAfterPickingRequestsChange()
+  }
+}
+
 // Load warehouse 3D data
 const loadWarehouse3DData = async () => {
   loading.value = true
   try {
+    outboundPaths.value = []
+    outboundPickedPalletIds.value = []
+    outboundTargetPallets.value = []
+
     const res = await warehouseApi.getWarehouse3DData(warehouseId.value)
     if (res.statusCode === 200 || res.code === 0) {
       warehouseData.value = res.data
@@ -685,14 +865,24 @@ const loadWarehouse3DData = async () => {
 
                 inboundApprovalView.value = view
               }
-            } catch {
-              // Bỏ qua lỗi, chỉ mất overlay chi tiết hàng inbound
+            } catch (error) {
+              console.error('[Warehouse3D] load inbound approval view failed', error)
             }
           } else {
             ElMessage.error(previewRes.message || 'Không thể tải layout inbound để xem 3D')
           }
-        } catch (e) {
+        } catch (error) {
+          console.error('[Warehouse3D] load inbound preview failed', error)
           ElMessage.error('Lỗi khi tải layout inbound để xem 3D')
+        }
+      }
+
+      // Nếu đang ở màn 3D outbound approval thì luôn load danh sách phiếu xuất đang lấy hàng,
+      // và nếu đã có receiptId cụ thể thì tính đường đi từ bàn checkin đến các pallet thuộc phiếu outbound đó
+      if (outbound3DMode.value) {
+        await loadOutboundPickingRequests()
+        if (effectiveOutboundReceiptId.value) {
+          await loadOutboundDataForReceipt(effectiveOutboundReceiptId.value)
         }
       }
 
@@ -702,9 +892,127 @@ const loadWarehouse3DData = async () => {
       ElMessage.error(res.message || 'Không thể tải dữ liệu kho')
     }
   } catch (error) {
+    // Log ngắn gọn để debug khi cần, không ảnh hưởng người dùng
+    console.error('[Warehouse3D] loadWarehouse3DData failed', error)
     ElMessage.error('Lỗi khi tải dữ liệu kho')
   } finally {
     loading.value = false
+  }
+}
+
+const loadOutboundDataForReceipt = async (receiptId: number) => {
+  if (!warehouseData.value) return
+
+  try {
+    const outRes = await outboundApi.getOutboundRequestDetail(receiptId)
+    if (outRes.statusCode === 200 || outRes.code === 0) {
+      outboundDetail.value = outRes.data as OutboundRequestDetail
+
+      const data = warehouseData.value
+      const detail = outboundDetail.value
+      if (data && detail && Array.isArray(data.items) && Array.isArray(data.pallets)) {
+        const allItems = data.items as ItemAllocation[]
+        const palletIdFromItems = new Set<number>()
+
+        // Pallet có hàng cho phiếu này theo dữ liệu 3D hiện tại (còn tồn vật lý)
+        detail.items.forEach((it) => {
+          const alloc = allItems.find((a) => a.itemId === it.itemId)
+          if (alloc && typeof alloc.palletId === 'number') {
+            palletIdFromItems.add(alloc.palletId)
+          }
+        })
+
+        // Load danh sách pallet đã được đánh dấu "Đã lấy" cho phiếu này
+        try {
+          const picksRes = await outboundApi.getOutboundPalletPicks(receiptId)
+          if (picksRes.statusCode === 200 || picksRes.code === 0) {
+            const picks = (picksRes.data as OutboundPalletPickViewModel[]) || []
+            outboundPickedPalletIds.value = picks.map((p) => p.palletId)
+          } else {
+            outboundPickedPalletIds.value = []
+          }
+        } catch {
+          outboundPickedPalletIds.value = []
+        }
+
+        // Hợp nhất pallet từ hàng hóa trong kho (còn tồn) và pallet đã được pick (lịch sử)
+        const unionPalletIdSet = new Set<number>()
+        palletIdFromItems.forEach((id) => unionPalletIdSet.add(id))
+        outboundPickedPalletIds.value.forEach((id) => {
+          if (typeof id === 'number' && Number.isFinite(id)) {
+            unionPalletIdSet.add(id)
+          }
+        })
+
+        const allPalletIds = Array.from(unionPalletIdSet)
+
+        const palletsInfo = allPalletIds.map((pid) => {
+          const palletLoc: any = data.pallets.find((p) => p.palletId === pid) || null
+          const barcode = palletLoc?.barcode ?? null
+          const palletItems = detail.items.filter((it) => {
+            const alloc = allItems.find((a) => a.itemId === it.itemId)
+            return alloc && alloc.palletId === pid
+          })
+          const hasPhysicalPallet = !!palletLoc
+          return { palletId: pid, barcode, items: palletItems as any[], hasPhysicalPallet }
+        })
+
+        // outboundTargetPallets bây giờ bao gồm cả pallet đã lấy (chỉ có trong OutboundPalletPicks)
+        outboundTargetPallets.value = palletsInfo
+
+        const paths: { palletId: number; points: PathPoint[] }[] = []
+
+        // Chỉ tính đường đi cho các pallet còn hàng (theo 3D data) và chưa được pick
+        palletIdFromItems.forEach((pid) => {
+          if (outboundPickedPalletIds.value.includes(pid)) return
+
+          const path = findPathToPallet(data, pid, null, {
+            cellSize: 0.3,
+            safetyMargin: 0.75,
+            maxIterations: 300000
+          })
+
+          if (path.success && path.points.length >= 2) {
+            paths.push({ palletId: pid, points: path.points })
+          }
+        })
+
+        outboundPaths.value = paths
+
+        // Chỉ cảnh báo khi còn pallet chưa pick nhưng không tìm được đường
+        if (!paths.length && palletIdFromItems.size > 0) {
+          ElMessage.warning('Không tìm được đường đi rộng ≥ 1.5m để đến pallet cho phiếu xuất này')
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[Warehouse3D] loadOutboundDataForReceipt failed', {
+      receiptId,
+      error
+    })
+  }
+
+  selectedOutboundReceiptId.value = receiptId
+  renderWarehouse()
+}
+
+const reloadOutbound3DForCurrentReceipt = async () => {
+  const receiptId = effectiveOutboundReceiptId.value
+  if (!outbound3DMode.value || !receiptId) return
+
+  try {
+    const res = await warehouseApi.getWarehouse3DData(warehouseId.value)
+    if (res.statusCode === 200 || res.code === 0) {
+      warehouseData.value = res.data
+      await loadOutboundDataForReceipt(receiptId)
+    }
+  } catch (error) {
+    console.error('[Warehouse3D] reloadOutbound3DForCurrentReceipt failed', {
+      warehouseId: warehouseId.value,
+      receiptId,
+      error
+    })
+    ElMessage.error('Không thể tải lại dữ liệu kho sau khi lấy pallet')
   }
 }
 
@@ -799,9 +1107,11 @@ const initThreeJS = () => {
 // Render warehouse objects
 const renderWarehouse = () => {
   if (!warehouseData.value) return
+  // Nếu scene chưa được khởi tạo (chưa chạy initThreeJS) thì không render để tránh lỗi
+  if (!scene) return
 
-  // Xoá các object động (zone, rack, shelf, pallet, item, khung kho) nhưng giữ lại nền, lưới, cổng, bàn checkin
-  const dynamicTypes = ['zone', 'pallet', 'item']
+  // Xoá các object động (zone, rack, shelf, pallet, item, đường đi outbound, khung kho) nhưng giữ lại nền, lưới, cổng, bàn checkin
+  const dynamicTypes = ['zone', 'pallet', 'item', 'outboundPath']
   const objectsToRemove: THREE.Object3D[] = []
 
   scene.children.forEach((child) => {
@@ -909,7 +1219,7 @@ const renderWarehouse = () => {
             }
           }
 
-          renderItem(virtualItem, virtualPallet, true)
+          renderItem(virtualItem, virtualPallet, true, isCurrentInbound)
         })
       }
     })
@@ -934,6 +1244,153 @@ const renderWarehouse = () => {
     if (filterByZone.value && zone.zoneId !== filterByZone.value) return
     if (filterByCustomer.value && zone.customerId !== filterByCustomer.value) return
     renderItem(item, pallet)
+  })
+
+  // Render outbound paths (đường đi từ bàn checkin đến các pallet trong phiếu outbound)
+  if (route.name === 'WarehouseOutbound3DApproval' && outboundPaths.value.length) {
+    renderOutboundPaths()
+  }
+}
+
+const renderOutboundPaths = () => {
+  if (!warehouseData.value || !outboundPaths.value.length) return
+
+  const y = 0.05
+  const stripHeight = 0.06
+  const stripHalfHeight = stripHeight / 2
+  const stripWidth = 0.5
+
+  const baseColor = 0x00c853
+
+  outboundPaths.value.forEach((p) => {
+    if (outboundPickedPalletIds.value.includes(p.palletId)) return
+    const pts = p.points
+    if (pts.length < 2) return
+
+    let lastSegmentDir: THREE.Vector3 | null = null
+    let lastEnd: THREE.Vector3 | null = null
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i]
+      const b = pts[i + 1]
+
+      const start = new THREE.Vector3(a.x, y, a.z)
+      const end = new THREE.Vector3(b.x, y, b.z)
+
+      const dir = new THREE.Vector3().subVectors(end, start)
+      const length = dir.length()
+      if (length <= 0.01) continue
+      dir.normalize()
+
+      const mid = new THREE.Vector3().addVectors(start, end).multiplyScalar(0.5)
+      const geometry = new THREE.BoxGeometry(stripWidth, stripHeight, length)
+      const material = new THREE.MeshPhongMaterial({
+        color: baseColor,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+        depthWrite: false
+      })
+      const strip = new THREE.Mesh(geometry, material)
+      strip.position.set(mid.x, y + stripHalfHeight, mid.z)
+      strip.rotation.y = Math.atan2(dir.x, dir.z)
+      strip.userData = { type: 'outboundPath', palletId: p.palletId }
+      scene.add(strip)
+
+      lastSegmentDir = dir
+      lastEnd = end
+    }
+
+    if (lastSegmentDir && lastEnd) {
+      const arrowOrigin = lastEnd.clone()
+      arrowOrigin.y += 0.15
+      const arrow = new THREE.ArrowHelper(lastSegmentDir, arrowOrigin, 0.9, 0xff5722, 0.35, 0.22)
+      arrow.userData = { type: 'outboundPath', palletId: p.palletId }
+
+      const lineMat = arrow.line.material as THREE.Material
+      const coneMat = arrow.cone.material as THREE.Material
+      ;[lineMat, coneMat].forEach((m) => {
+        if (!m) return
+        ;(m as any).depthTest = false
+        ;(m as any).depthWrite = false
+        ;(m as any).transparent = true
+      })
+
+      scene.add(arrow)
+    }
+  })
+
+  updateOutboundPathHighlight()
+}
+
+const updateOutboundPathHighlight = () => {
+  const baseColor = 0x00c853
+  const selectedColor = 0xffc107
+  const hoverColor = 0x40c4ff
+  const hoverSelectedColor = 0xffeb3b
+
+  scene.children.forEach((child) => {
+    const userData: any = (child as any).userData
+    if (!userData || userData.type !== 'outboundPath') return
+
+    const pid = Number(userData.palletId)
+    if (!Number.isFinite(pid)) return
+
+    const isSelected =
+      highlightedOutboundPalletId.value != null && highlightedOutboundPalletId.value === pid
+    const isHovered =
+      hoveredOutboundPathPalletId.value != null && hoveredOutboundPathPalletId.value === pid
+
+    let color = baseColor
+    let renderOrder = 1
+    let opacity = 0.9
+    if (isSelected && isHovered) {
+      color = hoverSelectedColor
+      renderOrder = 3
+      opacity = 1
+    } else if (isSelected) {
+      color = selectedColor
+      renderOrder = 3
+      opacity = 1
+    } else if (isHovered) {
+      color = hoverColor
+      renderOrder = 2
+      opacity = 0.95
+    }
+
+    if ((child as any).isMesh) {
+      const mesh = child as THREE.Mesh
+      mesh.renderOrder = renderOrder
+      const mat = mesh.material
+      if (Array.isArray(mat)) {
+        mat.forEach((m) => {
+          const typed = m as any
+          if (typed && typed.color) {
+            typed.color.setHex(color)
+            if (typed.transparent) typed.opacity = opacity
+          }
+        })
+      } else {
+        const typed = mat as any
+        if (typed && typed.color) {
+          typed.color.setHex(color)
+          if (typed.transparent) typed.opacity = opacity
+        }
+      }
+    } else if ((child as any).isArrowHelper) {
+      const arrow = child as THREE.ArrowHelper
+      arrow.renderOrder = renderOrder
+      const lineMat = arrow.line.material as any
+      const coneMat = arrow.cone.material as any
+      if (lineMat && lineMat.color) {
+        lineMat.color.setHex(color)
+        if (lineMat.transparent) lineMat.opacity = opacity
+      }
+      if (coneMat && coneMat.color) {
+        coneMat.color.setHex(color)
+        if (coneMat.transparent) coneMat.opacity = opacity
+      }
+    }
   })
 }
 
@@ -1142,6 +1599,15 @@ const renderPallet = (pallet: any, pendingInbound = false, isCurrentInbound = fa
     color = 0xf1c40f
   }
 
+  // Pallet outbound đang được chọn từ panel bên trái: highlight khác màu
+  if (
+    !pendingInbound &&
+    outbound3DMode.value &&
+    highlightedOutboundPalletId.value === pallet.palletId
+  ) {
+    color = 0x1abc9c
+  }
+
   const material = new THREE.MeshPhongMaterial({ color: color })
   const mesh = new THREE.Mesh(geometry, material)
   mesh.position.set(
@@ -1162,7 +1628,14 @@ const renderPallet = (pallet: any, pendingInbound = false, isCurrentInbound = fa
 
   // Thêm viền để dễ quan sát biên pallet trong 3D
   const edgeGeo = new THREE.EdgesGeometry(geometry)
-  const edgeColor = pendingInbound && isCurrentInbound ? 0xff0000 : 0x000000
+  let edgeColor = pendingInbound && isCurrentInbound ? 0xff0000 : 0x000000
+  if (
+    !pendingInbound &&
+    outbound3DMode.value &&
+    highlightedOutboundPalletId.value === pallet.palletId
+  ) {
+    edgeColor = 0x1abc9c
+  }
   const edgeMat = new THREE.LineBasicMaterial({ color: edgeColor })
   const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat)
   edgeLines.position.copy(mesh.position)
@@ -1175,7 +1648,7 @@ const renderPallet = (pallet: any, pendingInbound = false, isCurrentInbound = fa
 }
 
 // Render item (box on pallet)
-const renderItem = (item: any, pallet: any, pendingInbound = false) => {
+const renderItem = (item: any, pallet: any, pendingInbound = false, isCurrentInbound = false) => {
   const itemType = typeof item.itemType === 'string' ? item.itemType.toLowerCase() : ''
   const shape = typeof item.shape === 'string' ? item.shape.toLowerCase() : ''
   // ... rest of the code remains the same ...
@@ -1201,12 +1674,12 @@ const renderItem = (item: any, pallet: any, pendingInbound = false) => {
 
   // Nếu backend đã có layout chi tiết (manual hoặc auto) thì ưu tiên vẽ theo stackUnits
   if (Array.isArray(item.stackUnits) && item.stackUnits.length > 0) {
-    renderItemFromStackUnits(item, pallet, color, pendingInbound)
+    renderItemFromStackUnits(item, pallet, color, pendingInbound, isCurrentInbound)
     return
   }
 
   if (isBox || isBag) {
-    renderBoxItemAsCartons(item, pallet, color, pendingInbound)
+    renderBoxItemAsCartons(item, pallet, color, pendingInbound, isCurrentInbound)
     return
   }
 
@@ -1235,14 +1708,24 @@ const renderItem = (item: any, pallet: any, pendingInbound = false) => {
 }
 
 // Render từ stackUnits (layout chi tiết từ InboundItemStackUnits)
+// Lưu ý: số lượng khối được vẽ sẽ không vượt quá item.unitQuantity (tồn còn lại trên pallet).
 const renderItemFromStackUnits = (
   item: any,
   pallet: any,
   color: number,
-  pendingInbound = false
+  pendingInbound = false,
+  isCurrentInbound = false
 ) => {
-  const units = (item.stackUnits || []) as any[]
-  if (!units.length) return
+  const allUnits = (item.stackUnits || []) as any[]
+  if (!allUnits.length) return
+
+  // Sử dụng unitQuantity (tồn còn lại) nếu có, ngược lại fallback = tổng số đơn vị layout
+  let qty = Number(item.unitQuantity ?? 0) || 1
+
+  const maxUnits = Math.min(allUnits.length, Math.max(0, Math.floor(qty)))
+  if (maxUnits <= 0) return
+
+  const units = allUnits.slice(0, maxUnits)
 
   // Trong layout inbound, localX/Z được tính tương đối so với tâm pallet, mặt đất = 0
   const palletCenterX = pallet.positionX + pallet.palletLength / 2
@@ -1258,7 +1741,8 @@ const renderItemFromStackUnits = (
     opacity: 0.95,
     transparent: true
   })
-  const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 })
+  const edgeColor = pendingInbound && isCurrentInbound ? 0xff0000 : 0x000000
+  const edgeMaterial = new THREE.LineBasicMaterial({ color: edgeColor })
 
   units.forEach((u) => {
     const length = Number(u.length) || 0
@@ -1281,25 +1765,6 @@ const renderItemFromStackUnits = (
     )
     const unitRot = Number(u.rotationY || 0)
     mesh.rotation.y = palletRot + unitRot
-    if (pendingInbound) {
-      console.log('[Inbound3D] renderItemFromStackUnits', {
-        palletId: pallet.palletId,
-        itemId: item.itemId ?? null,
-        inboundItemId: item.inboundItemId ?? null,
-        unitIndex: u.unitIndex ?? null,
-        palletRot,
-        unitRot,
-        palletCenterX,
-        palletCenterZ,
-        localX,
-        localZ,
-        rotatedX,
-        rotatedZ,
-        worldX: mesh.position.x,
-        worldY: mesh.position.y,
-        worldZ: mesh.position.z
-      })
-    }
     mesh.userData = { type: 'item', data: item, pendingInbound }
     mesh.name = `item_${item.itemId}_unit_${u.unitIndex ?? 0}`
     mesh.castShadow = true
@@ -1316,7 +1781,13 @@ const renderItemFromStackUnits = (
   })
 }
 
-const renderBoxItemAsCartons = (item: any, pallet: any, color: number, _pendingInbound = false) => {
+const renderBoxItemAsCartons = (
+  item: any,
+  pallet: any,
+  color: number,
+  pendingInbound = false,
+  isCurrentInbound = false
+) => {
   const rawStackL = Number(item.length) || 0
   const rawStackW = Number(item.width) || 0
   const rawStackH = Number(item.height) || 0
@@ -1372,7 +1843,8 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number, _pendingI
   const geometry = new THREE.BoxGeometry(boxLength, boxHeight, boxWidth)
   const material = new THREE.MeshPhongMaterial({ color, flatShading: true })
   const edgesGeometry = new THREE.EdgesGeometry(geometry)
-  const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 })
+  const edgeColor = pendingInbound && isCurrentInbound ? 0xff0000 : 0x000000
+  const edgeMaterial = new THREE.LineBasicMaterial({ color: edgeColor })
 
   const palletCenterX = pallet.positionX + pallet.palletLength / 2
   const palletCenterZ = pallet.positionZ + pallet.palletWidth / 2
@@ -1404,7 +1876,7 @@ const renderBoxItemAsCartons = (item: any, pallet: any, color: number, _pendingI
       baseY + boxHeight * (layer + 0.5),
       palletCenterZ + rotatedZ
     )
-    mesh.userData = { type: 'item', data: item }
+    mesh.userData = { type: 'item', data: item, pendingInbound }
     mesh.name = `item_${item.itemId}_carton`
     mesh.castShadow = true
 
@@ -1473,6 +1945,12 @@ const animate = () => {
 const pickDraggablePallet = (event: PointerEvent): THREE.Object3D | null => {
   if (!container.value || !inboundMode.value) return null
 
+  // Chỉ cho phép kéo pallet inbound hiện tại (pallet đang được duyệt)
+  const current = currentInboundPallet.value
+  if (!current) return null
+  const currentId = Number(current.palletId)
+  if (!Number.isFinite(currentId)) return null
+
   const rect = container.value.getBoundingClientRect()
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
@@ -1481,9 +1959,14 @@ const pickDraggablePallet = (event: PointerEvent): THREE.Object3D | null => {
   const intersects = raycaster.intersectObjects(scene.children, true)
   if (!intersects.length) return null
 
-  const hit = intersects.find(
-    (i) => i.object.userData?.type === 'pallet' && i.object.userData?.pendingInbound
-  )
+  const hit = intersects.find((i) => {
+    const ud: any = i.object.userData || {}
+    if (ud.type !== 'pallet' || ud.pendingInbound !== true) return false
+    const data = ud.data || {}
+    const pid = Number(data.palletId)
+    return Number.isFinite(pid) && pid === currentId
+  })
+
   return hit ? hit.object : null
 }
 
@@ -1523,7 +2006,7 @@ const onPointerDown = (event: PointerEvent) => {
     dragOffset.set(0, 0, 0)
   }
 
-  // Tạm thời vô hiệu hóa điều khiển camera khi drag
+  // Tạm thởi vô hiệu hóa điều khiển camera khi drag
   if (controls) {
     controls.enableRotate = false
     controls.enablePan = false
@@ -1531,20 +2014,40 @@ const onPointerDown = (event: PointerEvent) => {
 }
 
 const onPointerMove = (event: PointerEvent) => {
-  if (!isDragging || !draggingPallet || !dragPlane || !warehouseData.value) return
+  if (!renderer || !container.value) return
 
   const rect = renderer.domElement.getBoundingClientRect()
   mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
   mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+
   raycaster.setFromCamera(mouse, camera)
 
-  const point = new THREE.Vector3()
-  if (!raycaster.ray.intersectPlane(dragPlane, point)) return
+  const intersects = raycaster.intersectObjects(scene.children, true)
+  let hoverId: number | null = null
+  for (const hit of intersects) {
+    const ud: any = hit.object.userData
+    if (ud && ud.type === 'outboundPath' && typeof ud.palletId === 'number') {
+      hoverId = ud.palletId
+      break
+    }
+  }
+  if (hoverId !== hoveredOutboundPathPalletId.value) {
+    hoveredOutboundPathPalletId.value = hoverId
+    updateOutboundPathHighlight()
+  }
 
-  point.sub(dragOffset)
+  if (!isDragging || !draggingPallet || !dragPlane || !warehouseData.value) return
+
+  const intersection = raycaster.ray.intersectPlane(dragPlane, new THREE.Vector3())
+
+  if (!intersection) return
+
+  if (!warehouseData.value) return
 
   const data = draggingPalletData
   if (!data) return
+
+  const point = intersection.clone().sub(dragOffset)
 
   // Clamp trong phạm vi zone hoặc rack/tầng tương ứng
   const zone = warehouseData.value.zones?.find((z) => z.zoneId === data.zoneId)
@@ -1735,9 +2238,16 @@ const handleObjectClick = (userData: any) => {
       inboundPendingPallets.value.length
     ) {
       const idx = inboundPendingPallets.value.findIndex((p) => p.palletId === palletId)
-      if (idx !== -1) {
+      // Không cho phép chọn lại pallet đã duyệt làm pallet đang thao tác
+      if (idx !== -1 && !confirmedInboundPalletIds.value.includes(palletId)) {
         currentInboundIndex.value = idx
       }
+    }
+
+    // Ở chế độ outbound 3D, khi click pallet trong scene thì đồng bộ pallet đang chọn
+    if (outbound3DMode.value && Number.isFinite(palletId)) {
+      highlightedOutboundPalletId.value = palletId
+      renderWarehouse()
     }
 
     showPalletDetails(userData.data)
@@ -1854,7 +2364,7 @@ const showRackDetails = (rack: any) => {
     `
     <div style="line-height: 1.8">
       <p><strong>Tên kệ:</strong> ${rack.rackName || `Kệ #${rack.rackId}`}</p>
-      <p><strong>Khu vực:</strong> ${zone?.zoneName || `Zone #${rack.zoneId}`}</p>
+      <p><strong>Khách hàng:</strong> ${zone?.customerName || 'Chưa phân bổ'}</p>
       <p><strong>Kích thước kệ:</strong> ${rack.length}m × ${rack.width}m × ${rack.height}m</p>
       <p><strong>Vị trí gốc (X, Y, Z):</strong> (${rack.positionX}, ${rack.positionY}, ${rack.positionZ})</p>
       <p><strong>Số tầng kệ:</strong> ${totalLevels}</p>
@@ -1961,6 +2471,74 @@ const showPalletDetails = (pallet: any) => {
 
   palletDetailVisible.value = true
 }
+const handleMarkOutboundPalletPickedFromList = async (palletId: number) => {
+  if (!outbound3DMode.value) return
+  if (!effectiveOutboundReceiptId.value) return
+  if (!Number.isFinite(palletId)) return
+  if (outboundPickedPalletIds.value.includes(palletId)) return
+
+  try {
+    await ElMessageBox.confirm(
+      'Xác nhận pallet này đã được lấy ra khỏi kho?',
+      'Xác nhận Đã lấy pallet',
+      { type: 'warning' }
+    )
+  } catch {
+    return
+  }
+
+  try {
+    const res = await outboundApi.markPalletPicked(effectiveOutboundReceiptId.value, {
+      palletId
+    })
+    if (res.statusCode === 200 || res.code === 0) {
+      await reloadOutbound3DForCurrentReceipt()
+      await loadOutboundPickingRequests()
+      ElMessage.success('Đã đánh dấu pallet này là "Đã lấy" và tải lại dữ liệu 3D')
+    } else {
+      ElMessage.error(res.message || 'Không thể đánh dấu pallet đã lấy')
+    }
+  } catch {
+    ElMessage.error('Lỗi khi đánh dấu pallet đã lấy')
+  }
+}
+
+const focusCameraOnPallet = (palletId: number) => {
+  if (!warehouseData.value || !camera || !controls) return
+
+  const pallet = warehouseData.value.pallets?.find((p) => p.palletId === palletId)
+  if (!pallet) return
+
+  const centerX = pallet.positionX + pallet.palletLength / 2
+  const centerY = pallet.positionY + pallet.palletHeight
+  const centerZ = pallet.positionZ + pallet.palletWidth / 2
+
+  const currentTarget = controls.target.clone()
+  const offset = new THREE.Vector3().subVectors(camera.position, currentTarget)
+  let distance = offset.length()
+  if (!Number.isFinite(distance) || distance <= 0) {
+    distance = Math.max(warehouseData.value.length, warehouseData.value.width) * 0.8
+  }
+  offset.normalize()
+
+  camera.position.set(
+    centerX + offset.x * distance,
+    centerY + Math.abs(offset.y * distance),
+    centerZ + offset.z * distance
+  )
+  controls.target.set(centerX, centerY, centerZ)
+  controls.update()
+
+  highlightedOutboundPalletId.value = palletId
+  renderWarehouse()
+}
+
+const handleClickOutboundPalletRow = (p: { palletId: number }) => {
+  if (!warehouseData.value) return
+  const pallet = warehouseData.value.pallets?.find((pl) => pl.palletId === p.palletId)
+  if (!pallet) return
+  focusCameraOnPallet(p.palletId)
+}
 
 const showItemDetails = (item: any) => {
   ElMessageBox.alert(
@@ -2015,26 +2593,14 @@ const applyFilter = () => {
 const getSelectedInboundPendingPallet = () => {
   if (!inboundMode.value) return null
 
-  // Ưu tiên pallet đang được chọn trong 3D (selectedObject)
-  const sel = selectedObject.value
-  if (sel && sel.palletId != null) {
-    const palletId = Number(sel.palletId)
-    if (Number.isFinite(palletId)) {
-      const pending = inboundPendingPallets.value.find((p) => Number(p.palletId) === palletId)
-      if (pending) return { pending, palletId }
-    }
-  }
+  // Chỉ định rõ pallet đang được duyệt là pallet có thể thao tác
+  const current = currentInboundPallet.value
+  if (!current) return null
 
-  // Nếu chưa chọn gì nhưng chỉ có đúng 1 pallet inbound pending thì tự động dùng pallet đó
-  if (inboundPendingPallets.value.length === 1) {
-    const only = inboundPendingPallets.value[0]
-    const palletId = Number(only.palletId)
-    if (Number.isFinite(palletId)) {
-      return { pending: only, palletId }
-    }
-  }
+  const palletId = Number(current.palletId)
+  if (!Number.isFinite(palletId)) return null
 
-  return null
+  return { pending: current, palletId }
 }
 
 const moveSelectedInboundPalletToGround = () => {
@@ -2159,7 +2725,7 @@ const moveSelectedInboundPalletToGround = () => {
   renderWarehouse()
 }
 
-const moveSelectedInboundPalletToNearestShelf = () => {
+const moveInboundPalletToNearestShelf = (preferHigher: boolean) => {
   if (!inboundMode.value) return
   if (!warehouseData.value) return
 
@@ -2179,7 +2745,7 @@ const moveSelectedInboundPalletToNearestShelf = () => {
   // Lấy kích thước pallet để kiểm tra phù hợp với chiều dài tầng kệ
   const size = getPalletSizeForPalletId(pending.palletId)
   if (!size) {
-    ElMessage.warning('Không xác định được kích thước pallet để đưa lên tầng kệ')
+    ElMessage.warning('Không xác định được kích thước pallet để đưa lên/xuống tầng kệ')
     return
   }
 
@@ -2207,44 +2773,18 @@ const moveSelectedInboundPalletToNearestShelf = () => {
   const canFitOnShelf = (rack: any, shelf: any) => {
     const usableLength = Number((shelf && (shelf as any).length) ?? rack.length ?? 0)
     if (!Number.isFinite(usableLength) || usableLength <= 0) {
-      console.debug('[Inbound3D] Shelf rejected (invalid usable length)', {
-        rackId: rack.rackId,
-        shelfId: shelf?.shelfId,
-        usableLength
-      })
       return false
     }
     if (length > usableLength) {
-      console.debug('[Inbound3D] Shelf rejected (pallet too long for shelf)', {
-        rackId: rack.rackId,
-        shelfId: shelf?.shelfId,
-        palletLength: length,
-        usableLength
-      })
       return false
     }
     const clearHeight = getShelfClearHeightFrontend(rack, shelf)
     if ((palletHeight > 0 || goodsHeight > 0) && clearHeight > 0) {
       const totalHeight = palletHeight + goodsHeight
       if (totalHeight > clearHeight) {
-        console.debug('[Inbound3D] Shelf rejected (not enough clear height)', {
-          rackId: rack.rackId,
-          shelfId: shelf?.shelfId,
-          palletHeight,
-          goodsHeight,
-          totalHeight,
-          clearHeight
-        })
         return false
       }
     }
-    console.debug('[Inbound3D] Shelf accepted (fits by length & height)', {
-      rackId: rack.rackId,
-      shelfId: shelf?.shelfId,
-      palletLength: length,
-      palletHeight,
-      goodsHeight
-    })
     return true
   }
 
@@ -2268,50 +2808,121 @@ const moveSelectedInboundPalletToNearestShelf = () => {
     distance: number
   }
 
-  const higherCandidates: ShelfCandidate[] = []
-  const fallbackCandidates: ShelfCandidate[] = []
+  const sameRackCandidates: ShelfCandidate[] = []
+  const edgeRackCandidates: ShelfCandidate[] = []
+
+  // Xác định kệ hiện tại: nếu pallet đang ở trên kệ, dùng rack của kệ đó;
+  // nếu pallet đang ở mặt đất thì chọn kệ gần nhất theo khoảng cách.
+  let currentRack: any | null = null
+  if (pending.shelfId != null) {
+    const currentShelf = findShelfById(pending.shelfId)
+    if (currentShelf) {
+      currentRack = (warehouseData.value.racks || []).find(
+        (r: any) => r.rackId === (currentShelf as any).rackId
+      )
+    }
+  }
+
+  if (!currentRack && racksInZone.length) {
+    currentRack = racksInZone.reduce((best: any | null, rack: any) => {
+      if (!best) return rack
+      return getRackDistance(rack) < getRackDistance(best) ? rack : best
+    }, null as any)
+  }
 
   racksInZone.forEach((rack) => {
-    const shelves = (rack.shelves || []) as any[]
+    const rawShelves = (rack.shelves || []) as any[]
+    if (!rawShelves.length) return
+
+    const shelves = rawShelves.filter((shelf) => {
+      const shelfY = Number(shelf.positionY || 0)
+      if (!Number.isFinite(shelfY)) return false
+      if (!canFitOnShelf(rack, shelf)) return false
+      // Nếu pallet đang ở sẵn trên một tầng kệ, không đưa chính tầng đó vào candidate
+      if (pending.shelfId != null && shelf.shelfId === pending.shelfId) return false
+      return true
+    })
+
     if (!shelves.length) return
 
     const dist = getRackDistance(rack)
+    const isCurrentRack = currentRack && rack.rackId === currentRack.rackId
 
-    shelves.forEach((shelf) => {
-      const shelfY = Number(shelf.positionY || 0)
-      if (!Number.isFinite(shelfY)) return
-      if (!canFitOnShelf(rack, shelf)) return
+    if (isCurrentRack) {
+      // Bước 1: Ưu tiên tầng cao hơn/thấp hơn gần nhất trên chính kệ hiện tại
+      shelves.forEach((shelf) => {
+        const shelfY = Number(shelf.positionY || 0)
+        const rawDeltaY = shelfY - currentY
 
-      // Nếu pallet đang ở sẵn trên một tầng kệ, không đưa chính tầng đó vào candidate
-      if (pending.shelfId != null && shelf.shelfId === pending.shelfId) return
+        if (preferHigher && rawDeltaY > 0) {
+          // Tầng cao hơn currentY trên cùng kệ
+          sameRackCandidates.push({
+            rack,
+            shelf,
+            shelfY,
+            deltaY: rawDeltaY,
+            distance: dist
+          })
+        } else if (!preferHigher && rawDeltaY < 0) {
+          // Tầng thấp hơn currentY trên cùng kệ
+          sameRackCandidates.push({
+            rack,
+            shelf,
+            shelfY,
+            deltaY: Math.abs(rawDeltaY),
+            distance: dist
+          })
+        }
+      })
+    } else {
+      // Bước 2: Fallback – nếu không tìm được trên kệ hiện tại thì xét
+      //   - tầng cao nhất ở các kệ khác (khi đưa lên)
+      //   - tầng thấp nhất ở các kệ khác (khi đưa xuống)
+      let edgeShelf: any | null = null
 
-      const deltaY = shelfY - currentY
-
-      if (deltaY > 0) {
-        // Tầng cao hơn currentY
-        higherCandidates.push({ rack, shelf, shelfY, deltaY, distance: dist })
+      if (preferHigher) {
+        // Tầng cao nhất
+        edgeShelf = shelves.reduce((best: any | null, shelf: any) => {
+          if (!best) return shelf
+          const by = Number(best.positionY || 0)
+          const sy = Number(shelf.positionY || 0)
+          return sy > by ? shelf : best
+        }, null as any)
       } else {
-        // Fallback: tầng thấp hơn hoặc bằng currentY
-        fallbackCandidates.push({ rack, shelf, shelfY, deltaY: Math.abs(deltaY), distance: dist })
+        // Tầng thấp nhất
+        edgeShelf = shelves.reduce((best: any | null, shelf: any) => {
+          if (!best) return shelf
+          const by = Number(best.positionY || 0)
+          const sy = Number(shelf.positionY || 0)
+          return sy < by ? shelf : best
+        }, null as any)
       }
-    })
+
+      if (edgeShelf) {
+        const shelfY = Number(edgeShelf.positionY || 0)
+        const deltaY = Math.abs(shelfY - currentY)
+        edgeRackCandidates.push({
+          rack,
+          shelf: edgeShelf,
+          shelfY,
+          deltaY,
+          distance: dist
+        })
+      }
+    }
   })
 
-  // Ưu tiên các tầng cao hơn currentY, sau đó tới các tầng thấp hơn/bằng
+  // Sắp xếp theo |deltaY| tăng dần, sau đó theo khoảng cách trong mặt phẳng XZ
   const sortByHeightAndDistance = (a: ShelfCandidate, b: ShelfCandidate) => {
     const dy = a.deltaY - b.deltaY
     if (Math.abs(dy) > 1e-6) return dy
     return a.distance - b.distance
   }
 
-  higherCandidates.sort(sortByHeightAndDistance)
-  fallbackCandidates.sort(sortByHeightAndDistance)
+  sameRackCandidates.sort(sortByHeightAndDistance)
+  edgeRackCandidates.sort(sortByHeightAndDistance)
 
-  const candidates: ShelfCandidate[] = higherCandidates.length
-    ? higherCandidates
-    : fallbackCandidates
-
-  if (!candidates.length) {
+  if (!sameRackCandidates.length && !edgeRackCandidates.length) {
     ElMessage.warning('Không còn tầng kệ nào phù hợp (theo chiều dài) trong khu vực này')
     return
   }
@@ -2393,11 +3004,23 @@ const moveSelectedInboundPalletToNearestShelf = () => {
     shelf: any
   } | null = null
 
-  for (const cand of candidates) {
+  // Bước 1: thử tất cả candidate trên cùng kệ hiện tại (nếu có)
+  for (const cand of sameRackCandidates) {
     const pos = findFreeSlotOnShelf(cand)
     if (pos) {
       chosen = pos
       break
+    }
+  }
+
+  // Bước 2: nếu không tìm được ô trống trên kệ hiện tại, thử các kệ khác (tầng cao nhất/thấp nhất)
+  if (!chosen) {
+    for (const cand of edgeRackCandidates) {
+      const pos = findFreeSlotOnShelf(cand)
+      if (pos) {
+        chosen = pos
+        break
+      }
     }
   }
 
@@ -2429,6 +3052,14 @@ const moveSelectedInboundPalletToNearestShelf = () => {
   }
 
   renderWarehouse()
+}
+
+const moveSelectedInboundPalletToNearestShelf = () => {
+  moveInboundPalletToNearestShelf(true)
+}
+
+const moveSelectedInboundPalletToNearestLowerShelf = () => {
+  moveInboundPalletToNearestShelf(false)
 }
 
 const confirmCurrentInboundPalletAndNext = () => {
@@ -2474,10 +3105,15 @@ const confirmCurrentInboundPalletAndNext = () => {
   if (nextIndex !== -1) {
     currentInboundIndex.value = nextIndex
   } else {
+    // Không còn pallet nào chưa duyệt: bỏ chọn pallet hiện tại để ngăn thao tác tiếp
+    currentInboundIndex.value = null
     ElMessage.success(
       'Đã duyệt qua tất cả pallet inbound. Bạn có thể bấm "Duyệt inbound tại zone" để hoàn tất.'
     )
   }
+
+  // Cập nhật lại 3D ngay lập tức để viền đỏ và pallet đang thao tác chuyển sang pallet kế tiếp
+  renderWarehouse()
 }
 
 const handleApproveInboundFrom3D = async () => {
@@ -2533,14 +3169,6 @@ const handleKeydown = (event: KeyboardEvent) => {
       tag === 'input' || tag === 'textarea' || tag === 'select' || target.isContentEditable
   }
 
-  console.log('[Inbound3D] handleKeydown', {
-    key: event.key,
-    inboundMode: inboundMode.value,
-    targetTag: target?.tagName,
-    isFormElement,
-    receiptId: inboundReceiptId.value
-  })
-
   // Chỉ áp dụng khi đang ở chế độ inbound 3D approval
   if (!inboundMode.value) return
 
@@ -2551,8 +3179,17 @@ const handleKeydown = (event: KeyboardEvent) => {
   rotateSelectedInboundPallet()
 }
 
-onMounted(() => {
-  loadWarehouse3DData()
+onMounted(async () => {
+  if (outbound3DMode.value) {
+    await loadWarehousesFor3D()
+  }
+
+  await loadWarehouse3DData()
+
+  if (outbound3DMode.value) {
+    await loadOutboundPickingRequests()
+  }
+
   window.addEventListener('keydown', handleKeydown)
 })
 
@@ -2631,44 +3268,138 @@ onBeforeUnmount(() => {
 
           <ElDivider />
 
-          <template v-if="!inboundMode">
-            <div class="control-section">
-              <h4>Lọc khách hàng</h4>
-              <ElSelect
-                v-model="filterByCustomer"
-                placeholder="Tất cả"
-                size="small"
-                clearable
-                @change="applyFilter"
-              >
-                <ElOption
-                  v-for="customer in customers"
-                  :key="customer.id"
-                  :label="customer.name"
-                  :value="customer.id"
-                />
-              </ElSelect>
-            </div>
+          <div v-if="!outbound3DMode" class="control-section">
+            <h4>Lọc khách hàng</h4>
+            <ElSelect
+              v-model="filterByCustomer"
+              placeholder="Tất cả"
+              size="small"
+              clearable
+              @change="applyFilter"
+            >
+              <ElOption
+                v-for="customer in customers"
+                :key="customer.id"
+                :label="customer.name"
+                :value="customer.id"
+              />
+            </ElSelect>
+          </div>
 
+          <div v-if="!outbound3DMode" class="control-section">
+            <h4>Lọc theo khu vực (zone)</h4>
+            <ElSelect
+              v-model="filterByZone"
+              placeholder="Tất cả khu vực"
+              size="small"
+              :clearable="!isZoneLockedFromQuery"
+              @change="applyFilter"
+            >
+              <ElOption
+                v-for="zone in zonesForFilter"
+                :key="zone.id"
+                :label="zone.name"
+                :value="zone.id"
+              />
+            </ElSelect>
+          </div>
+          <ElDivider />
+
+          <template v-if="outbound3DMode">
             <div class="control-section">
-              <h4>Lọc theo khu vực (zone)</h4>
+              <h4>Kho</h4>
               <ElSelect
-                v-model="filterByZone"
-                placeholder="Tất cả khu vực"
+                v-model="selectedWarehouseIdFor3D"
+                placeholder="Chọn kho"
                 size="small"
-                :clearable="!isZoneLockedFromQuery"
-                @change="applyFilter"
+                style="width: 100%"
+                :loading="loadingWarehousesFor3D"
+                @change="handleWarehouseChange3D"
               >
                 <ElOption
-                  v-for="zone in zonesForFilter"
-                  :key="zone.id"
-                  :label="zone.name"
-                  :value="zone.id"
+                  v-for="w in warehousesFor3D"
+                  :key="w.warehouseId"
+                  :label="w.warehouseName || `Kho #${w.warehouseId}`"
+                  :value="w.warehouseId"
                 />
               </ElSelect>
             </div>
 
             <ElDivider />
+
+            <div class="control-section">
+              <h4>Phiếu xuất đang lấy hàng</h4>
+              <div v-if="!outboundPickingRequests.length" style="font-size: 13px; color: #909399">
+                Không có phiếu xuất nào đang lấy hàng.
+              </div>
+              <ElSelect
+                v-else
+                v-model="selectedOutboundReceiptId"
+                placeholder="Chọn phiếu xuất"
+                size="small"
+                style="width: 100%"
+                @change="(val) => val && loadOutboundDataForReceipt(val)"
+              >
+                <ElOption
+                  v-for="r in outboundPickingRequests"
+                  :key="r.receiptId"
+                  :label="r.receiptNumber"
+                  :value="r.receiptId"
+                />
+              </ElSelect>
+            </div>
+
+            <template v-if="outboundDetail">
+              <ElDivider />
+              <div class="control-section">
+                <h4>Pallet cần lấy trong phiếu xuất</h4>
+                <div v-if="!outboundTargetPallets.length" style="font-size: 13px; color: #909399">
+                  Không có pallet nào cần lấy.
+                </div>
+                <div v-else>
+                  <div
+                    v-for="p in outboundTargetPallets"
+                    :key="p.palletId"
+                    style="display: flex; gap: 6px; margin-bottom: 6px"
+                  >
+                    <ElButton
+                      size="small"
+                      class="no-margin-left-btn"
+                      :type="
+                        highlightedOutboundPalletId === p.palletId
+                          ? 'primary'
+                          : outboundPickedPalletIds.includes(p.palletId)
+                            ? 'success'
+                            : 'default'
+                      "
+                      :plain="!(highlightedOutboundPalletId === p.palletId)"
+                      style="flex: 1; text-align: left"
+                      @click="handleClickOutboundPalletRow(p)"
+                    >
+                      <span style="font-size: 13px">
+                        <strong>Pallet #{{ p.palletId }}</strong>
+                        <template v-if="p.hasPhysicalPallet">
+                          -
+                          <span
+                            v-if="outboundPickedPalletIds.includes(p.palletId)"
+                            class="status-picked"
+                          >
+                            Đã lấy
+                          </span>
+                          <span v-else class="status-pending">Chưa lấy</span>
+                          -
+                          {{ getOutboundPalletRequestedQty(p) }}
+                        </template>
+                        <template v-else>
+                          -
+                          <span class="status-picked">Đã hết</span>
+                        </template>
+                      </span>
+                    </ElButton>
+                  </div>
+                </div>
+              </div>
+            </template>
           </template>
 
           <div class="control-section">
@@ -2732,6 +3463,49 @@ onBeforeUnmount(() => {
         <div class="canvas-wrapper">
           <div v-loading="loading" ref="container" class="canvas-container"></div>
 
+          <div
+            v-if="outbound3DMode && canMarkOutboundPicked && highlightedOutboundPalletId !== null"
+            class="outbound-actions-overlay"
+          >
+            <div class="outbound-status">
+              Pallet đang chọn:
+              <strong>#{{ highlightedOutboundPalletId }}</strong>
+            </div>
+            <div
+              v-if="currentOutboundPalletItems.length"
+              style=" margin: 6px 0 8px;font-size: 12px"
+            >
+              <div
+                v-for="it in currentOutboundPalletItems"
+                :key="it.outboundItemId || it.itemId"
+                class="outbound-pallet-product"
+              >
+                <div>
+                  <strong>
+                    <span v-if="it.productCode">[{{ it.productCode }}] </span>
+                    {{ it.productName || it.itemName || 'Hàng hóa' }}
+                  </strong>
+                </div>
+                <div>
+                  Số lượng yêu cầu:
+                  <span v-if="it.quantity != null">{{ it.quantity }}</span>
+                  <span v-if="it.unit"> {{ it.unit }}</span>
+                </div>
+              </div>
+            </div>
+            <ElButton
+              size="small"
+              type="success"
+              class="no-margin-left-btn"
+              style="width: 100%"
+              :disabled="outboundPickedPalletIds.includes(highlightedOutboundPalletId as any)"
+              @click="handleMarkOutboundPalletPickedFromList(highlightedOutboundPalletId as any)"
+            >
+              <Icon icon="vi-ant-design:check-circle-outlined" />
+              Đã lấy hàng
+            </ElButton>
+          </div>
+
           <!-- Inbound actions inside 3D frame -->
           <div v-if="inboundMode" class="inbound-actions-overlay">
             <div class="inbound-status" style="margin-bottom: 8px; font-size: 12px">
@@ -2741,9 +3515,7 @@ onBeforeUnmount(() => {
                 <span v-else>Chưa bắt đầu</span>
               </div>
               <div v-if="inboundPendingPallets.length">
-                Đã duyệt {{ confirmedInboundPalletIds.length }}/{{
-                  inboundPendingPallets.length
-                }}
+                Đã duyệt {{ confirmedInboundPalletIds.length }}/{{ inboundPendingPallets.length }}
                 pallet
               </div>
             </div>
@@ -2789,6 +3561,17 @@ onBeforeUnmount(() => {
               <Icon icon="vi-ant-design:arrow-up-outlined" />
               Đưa pallet lên tầng gần nhất
             </ElButton>
+            <ElButton
+              size="small"
+              type="primary"
+              plain
+              class="no-margin-left-btn"
+              style="width: 100%; margin-top: 8px"
+              @click="moveSelectedInboundPalletToNearestLowerShelf"
+            >
+              <Icon icon="vi-ant-design:arrow-down-outlined" />
+              Đưa pallet xuống tầng gần nhất
+            </ElButton>
           </div>
 
           <!-- Help Text -->
@@ -2806,9 +3589,7 @@ onBeforeUnmount(() => {
 
     <ElDialog
       v-model="palletDetailVisible"
-      :title="
-        palletDetail ? `📦 Chi tiết Pallet - ${palletDetail.barcode || ''}` : 'Chi tiết Pallet'
-      "
+      :title="palletDetail ? '📦 Chi tiết Pallet' : 'Chi tiết Pallet'"
       width="720px"
     >
       <div v-if="palletDetail" class="pallet-detail-dialog">
@@ -2816,8 +3597,10 @@ onBeforeUnmount(() => {
           <div class="pallet-detail-left">
             <div class="pallet-header">
               <div>
-                <p><strong>Barcode:</strong> {{ palletDetail.barcode }}</p>
-                <p> <strong>Mã vị trí:</strong> {{ palletDetail.locationCode || 'N/A' }} </p>
+                <p>
+                  <strong>Mã pallet:</strong>
+                  {{ palletDetail.barcode || '#' + palletDetail.palletId }}
+                </p>
                 <p>
                   <strong>Vị trí:</strong>
                   ({{ palletDetail.positionX }}, {{ palletDetail.positionY }},
@@ -2829,18 +3612,22 @@ onBeforeUnmount(() => {
                   {{ palletDetail.palletHeight }}m
                 </p>
               </div>
-              <ElButton
-                size="small"
-                type="primary"
-                plain
-                class="qr-toggle-btn"
-                @click="showPalletQr = !showPalletQr"
-              >
-                <Icon
-                  :icon="showPalletQr ? 'vi-tdesign:chevron-left-s' : 'vi-tdesign:chevron-right-s'"
-                />
-                <span class="qr-toggle-label">QR pallet</span>
-              </ElButton>
+              <div style="display: flex; flex-direction: column; gap: 6px; align-items: flex-end">
+                <ElButton
+                  size="small"
+                  type="primary"
+                  plain
+                  class="qr-toggle-btn"
+                  @click="showPalletQr = !showPalletQr"
+                >
+                  <Icon
+                    :icon="
+                      showPalletQr ? 'vi-tdesign:chevron-left-s' : 'vi-tdesign:chevron-right-s'
+                    "
+                  />
+                  <span class="qr-toggle-label">QR pallet</span>
+                </ElButton>
+              </div>
             </div>
 
             <ElDivider />
@@ -2980,6 +3767,26 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   cursor: pointer;
+}
+
+.outbound-actions-overlay {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 12;
+  display: flex;
+  max-width: 260px;
+  min-width: 220px;
+  padding: 8px 10px;
+  background: rgb(255 255 255 / 96%);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 15%);
+  flex-direction: column;
+  gap: 6px;
+
+  .outbound-status {
+    font-size: 12px;
+  }
 }
 
 .inbound-actions-overlay {

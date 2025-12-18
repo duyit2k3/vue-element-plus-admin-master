@@ -20,10 +20,12 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls'
 import warehouseApi, { type Warehouse3DData, type WarehouseListItem } from '@/api/warehouse'
 import ActionPanel from './components/ActionPanel.vue'
+import { useRouter } from 'vue-router'
 
 // State
 const loading = ref(true)
 const warehouseList = ref<WarehouseListItem[]>([])
+const router = useRouter()
 const selectedWarehouseId = ref<number | undefined>(undefined)
 const warehouseData = ref<Warehouse3DData | null>(null)
 const canvasContainer = ref<HTMLDivElement>()
@@ -405,8 +407,16 @@ const handleInbound = () => {
 }
 
 const handleOutbound = () => {
-  ElMessageBox.alert('Chức năng đang phát triển', 'Xuất Kho', {
-    confirmButtonText: 'OK'
+  if (!selectedWarehouseId.value) {
+    ElMessage.warning('Vui lòng chọn kho trước')
+    return
+  }
+
+  router.push({
+    path: '/warehouse/outbound-request/create',
+    query: {
+      warehouseId: String(selectedWarehouseId.value)
+    }
   })
 }
 

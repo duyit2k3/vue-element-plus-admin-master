@@ -141,9 +141,21 @@ onMounted(() => {
               <Icon icon="vi-ant-design:unordered-list-outlined" />
               Xem Tất Cả Kho
             </ElButton>
-            <ElButton type="warning" @click="push('/warehouse/inbound-request/create')">
+            <ElButton
+              v-if="userRole !== 'warehouse_owner'"
+              type="warning"
+              @click="push('/warehouse/inbound-request/create')"
+            >
               <Icon icon="vi-ant-design:plus-square-outlined" />
               Tạo Yêu Cầu Nhập Kho
+            </ElButton>
+            <ElButton
+              v-if="userRole !== 'warehouse_owner'"
+              type="success"
+              @click="push('/warehouse/outbound-request/create')"
+            >
+              <Icon icon="vi-ant-design:upload-outlined" />
+              Tạo Yêu Cầu Xuất Kho
             </ElButton>
           </div>
         </ElCard>

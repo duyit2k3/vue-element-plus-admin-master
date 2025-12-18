@@ -3,6 +3,7 @@ import { computed, defineComponent, unref, PropType } from 'vue'
 import { ElMenu, ElScrollbar } from 'element-plus'
 import { useAppStore } from '@/store/modules/app'
 import { usePermissionStore } from '@/store/modules/permission'
+import { useUserStore } from '@/store/modules/user'
 import { useRenderMenuItem } from './components/useRenderMenuItem'
 import { useRouter } from 'vue-router'
 import { isUrl } from '@/utils/is'
@@ -29,6 +30,9 @@ export default defineComponent({
 
     const permissionStore = usePermissionStore()
 
+    const userStore = useUserStore()
+    const userRole = computed(() => userStore.getUserInfo?.role?.toLowerCase() || '')
+
     const menuMode = computed((): 'vertical' | 'horizontal' => {
       // 竖
       const vertical: LayoutType[] = ['classic', 'topLeft', 'cutMenu']
@@ -40,9 +44,30 @@ export default defineComponent({
       }
     })
 
-    const routers = computed(() =>
+    const rawRouters = computed(() =>
       unref(layout) === 'cutMenu' ? permissionStore.getMenuTabRouters : permissionStore.getRouters
     )
+
+    const filterOutboundPickingForCustomer = (routes: AppRouteRecordRaw[]): AppRouteRecordRaw[] => {
+      const isCustomer = userRole.value === 'customer'
+      if (!isCustomer) return routes
+
+      const filterRecursive = (list: AppRouteRecordRaw[]): AppRouteRecordRaw[] => {
+        return list
+          .filter((r) => r.name !== 'WarehouseOutboundPickingList')
+          .map((r) => {
+            const copy: AppRouteRecordRaw = { ...r }
+            if (copy.children && copy.children.length) {
+              copy.children = filterRecursive(copy.children)
+            }
+            return copy
+          })
+      }
+
+      return filterRecursive(routes)
+    }
+
+    const routers = computed(() => filterOutboundPickingForCustomer(unref(rawRouters)))
 
     const collapse = computed(() => appStore.getCollapse)
 
@@ -54,6 +79,7 @@ export default defineComponent({
       if (meta.activeMenu) {
         return meta.activeMenu as string
       }
+      // Ensure exact match by using the full path
       return path
     })
 
@@ -80,6 +106,7 @@ export default defineComponent({
     const renderMenu = () => {
       return (
         <ElMenu
+          key={unref(activeMenu)}
           defaultActive={unref(activeMenu)}
           mode={unref(menuMode)}
           collapse={

@@ -25,6 +25,7 @@ const router = useRouter()
 
 const userRole = computed(() => userStore.getUserInfo?.role?.toLowerCase() || '')
 const isWarehouseOwner = computed(() => userRole.value === 'warehouse_owner')
+const isCustomer = computed(() => userRole.value === 'customer')
 
 const warehouses = ref<WarehouseListItem[]>([])
 const selectedWarehouseId = ref<number | undefined>(undefined)
@@ -134,6 +135,46 @@ const viewInboundReceipt = (row: InboundRequestListItem) => {
 
   const url = `${origin.replace(/\/$/, '')}/inbound/${row.customerId}/${fileName}`
   window.open(url, '_blank')
+}
+
+const handleCancel = async (row: InboundRequestListItem) => {
+  if (!row.receiptId) return
+
+  if (!row.status || row.status.toLowerCase() !== 'pending') {
+    ElMessage.warning('Chỉ có thể hủy phiếu ở trạng thái pending')
+    return
+  }
+
+  try {
+    const { value, action } = await ElMessageBox.prompt(
+      'Nhập lý do hủy yêu cầu này',
+      'Hủy yêu cầu nhập kho',
+      {
+        confirmButtonText: 'Hủy yêu cầu',
+        cancelButtonText: 'Đóng',
+        type: 'warning',
+        inputPlaceholder: 'Ví dụ: Đã tạo nhầm, không còn nhu cầu nhập ...',
+        inputType: 'textarea',
+        inputValidator: (val: string) => {
+          if (!val || !val.trim()) return 'Vui lòng nhập lý do hủy'
+          return true
+        }
+      }
+    )
+
+    if (action !== 'confirm') return
+
+    await inboundApi.updateInboundRequestStatus(row.receiptId, {
+      status: 'cancelled',
+      notes: value.trim()
+    })
+
+    ElMessage.success('Đã hủy yêu cầu nhập kho')
+    await loadInboundRequests()
+  } catch (error: any) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error('Không thể hủy yêu cầu, vui lòng thử lại')
+  }
 }
 
 const handleReject = async (row: InboundRequestListItem) => {
@@ -307,6 +348,53 @@ onMounted(() => {
         size="small"
         v-loading="loadingInboundRequests"
       >
+        <ElTableColumn label="Thao tác" width="260">
+          <template #default="{ row }">
+            <ElButton
+              v-if="isCustomer && row.status && row.status.toLowerCase() === 'pending'"
+              type="danger"
+              text
+              size="small"
+              @click="handleCancel(row)"
+            >
+              <Icon icon="vi-ant-design:stop-outlined" />
+              Hủy
+            </ElButton>
+            <ElButton
+              v-if="row.status && row.status.toLowerCase() === 'completed'"
+              type="primary"
+              text
+              size="small"
+              class="ml-5"
+              @click="viewInboundReceipt(row)"
+            >
+              <Icon icon="vi-ant-design:file-pdf-outlined" />
+              Xem phiếu nhập
+            </ElButton>
+            <template v-if="isWarehouseOwner">
+              <ElButton
+                v-if="row.status && row.status.toLowerCase() === 'pending'"
+                type="success"
+                size="small"
+                class="ml-5"
+                @click="approveInboundRequest(row)"
+              >
+                <Icon icon="vi-ant-design:check-circle-outlined" />
+                Duyệt
+              </ElButton>
+              <ElButton
+                v-if="row.status && row.status.toLowerCase() === 'pending'"
+                type="danger"
+                size="small"
+                class="ml-5"
+                @click="handleReject(row)"
+              >
+                <Icon icon="vi-ant-design:stop-outlined" />
+                Từ chối
+              </ElButton>
+            </template>
+          </template>
+        </ElTableColumn>
         <ElTableColumn prop="receiptNumber" label="Mã phiếu" width="180" />
         <ElTableColumn prop="warehouseName" label="Kho" min-width="180" />
         <ElTableColumn label="Khu vực" min-width="160">
@@ -343,44 +431,6 @@ onMounted(() => {
           </template>
         </ElTableColumn>
         <ElTableColumn prop="createdByName" label="Người tạo" min-width="180" />
-        <ElTableColumn label="Phiếu nhập" width="160">
-          <template #default="{ row }">
-            <ElButton
-              v-if="row.status && row.status.toLowerCase() === 'completed'"
-              type="primary"
-              text
-              size="small"
-              @click="viewInboundReceipt(row)"
-            >
-              <Icon icon="vi-ant-design:file-pdf-outlined" />
-              Xem phiếu nhập
-            </ElButton>
-            <span v-else class="text-gray">—</span>
-          </template>
-        </ElTableColumn>
-        <ElTableColumn v-if="isWarehouseOwner" label="Thao tác" width="220">
-          <template #default="{ row }">
-            <ElButton
-              v-if="row.status && row.status.toLowerCase() === 'pending'"
-              type="success"
-              size="small"
-              @click="approveInboundRequest(row)"
-            >
-              <Icon icon="vi-ant-design:check-circle-outlined" />
-              Duyệt
-            </ElButton>
-            <ElButton
-              v-if="row.status && row.status.toLowerCase() === 'pending'"
-              type="danger"
-              size="small"
-              class="ml-5"
-              @click="handleReject(row)"
-            >
-              <Icon icon="vi-ant-design:stop-outlined" />
-              Từ chối
-            </ElButton>
-          </template>
-        </ElTableColumn>
       </ElTable>
       <div v-else class="text-gray text-sm">Chưa có yêu cầu nhập kho nào.</div>
     </ElCard>

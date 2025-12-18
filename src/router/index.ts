@@ -717,6 +717,20 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
         }
       },
       {
+        path: ':id/outbound-3d-approval/:receiptId?',
+        component: () => import('@/views/Warehouse/Warehouse3DViewer.vue'),
+        name: 'WarehouseOutbound3DApproval',
+        meta: {
+          title: 'Duyệt Outbound 3D',
+          icon: 'vi-ant-design:deployment-unit-outlined',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          // Khi đang ở màn 3D outbound thì sidebar cần active menu "Phiếu Xuất Đang Lấy Hàng"
+          activeMenu: '/warehouse/outbound-picking'
+        }
+      },
+      {
         path: ':id/items',
         component: () => import('@/views/Warehouse/WarehouseItems.vue'),
         name: 'WarehouseItems',
@@ -787,6 +801,51 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
           hidden: true,
           canTo: true,
           activeMenu: '/warehouse/inbound-request'
+        }
+      },
+      {
+        path: 'outbound-request',
+        component: () => import('@/views/Warehouse/WarehouseOutboundRequestList.vue'),
+        name: 'WarehouseOutboundRequest',
+        meta: {
+          title: 'Yêu Cầu Xuất Kho',
+          icon: 'vi-ant-design:upload-outlined',
+          noCache: true
+        }
+      },
+      {
+        path: 'outbound-request/create',
+        component: () => import('@/views/Warehouse/WarehouseOutboundRequest.vue'),
+        name: 'WarehouseOutboundRequestCreate',
+        meta: {
+          title: 'Tạo Yêu Cầu Xuất Kho',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/outbound-request'
+        }
+      },
+      {
+        path: 'outbound-request/:receiptId/detail',
+        component: () => import('@/views/Warehouse/WarehouseOutboundRequestDetail.vue'),
+        name: 'WarehouseOutboundRequestDetail',
+        meta: {
+          title: 'Chi Tiết Yêu Cầu Xuất Kho',
+          noCache: true,
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/outbound-request'
+        }
+      },
+      {
+        path: 'outbound-picking',
+        component: () => import('@/views/Warehouse/WarehouseOutboundPickingList.vue'),
+        name: 'WarehouseOutboundPickingList',
+        meta: {
+          title: 'Phiếu Xuất Đang Lấy Hàng',
+          icon: 'vi-ant-design:carry-out-outlined',
+          noCache: true,
+          roles: ['warehouse_owner', 'admin']
         }
       }
     ]
