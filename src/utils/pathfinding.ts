@@ -13,9 +13,12 @@ export interface PathfindingOptions {
   allowedZoneId?: number | null
   allowDiagonals?: boolean
 }
+
+export type PathPoint = Vec2
+
 export interface PathResult {
   success: boolean
-  points: Vec2[]
+  points: PathPoint[]
   distance: number
   exploredNodes: number
 }
