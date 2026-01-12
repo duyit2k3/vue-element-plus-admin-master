@@ -72,6 +72,28 @@ const inboundReceiptId = computed(() => {
   return n2
 })
 
+const isRentable = computed(() => warehouseData.value?.isRentable ?? false)
+
+const toggleRentStatus3D = async () => {
+  if (!warehouseData.value) return
+  const target = !isRentable.value
+  try {
+    const res = await (warehouseApi as any).setRentStatus(warehouseId.value, target)
+    if (res.statusCode === 200 || res.code === 0) {
+      // Cập nhật lại trạng thái thuê tại chỗ để nút hiển thị đúng
+      if (warehouseData.value) {
+        ;(warehouseData.value as any).isRentable = target
+      }
+      // target = true (1) => ngừng cho thuê, target = false (0) => đang cho thuê
+      ElMessage.success(target ? 'Kho đã ngừng cho thuê' : 'Kho đã bật cho thuê')
+    } else {
+      ElMessage.error('Không thể cập nhật trạng thái cho thuê của kho')
+    }
+  } catch (error) {
+    ElMessage.error('Lỗi khi cập nhật trạng thái cho thuê của kho')
+  }
+}
+
 // receiptId outbound lấy từ params hoặc query (route WarehouseOutbound3DApproval)
 const outboundReceiptId = computed(() => {
   const fromParams = route.params.receiptId
@@ -116,6 +138,20 @@ const currentOutboundPalletItems = computed<any[]>(() => {
   return (p?.items as any[]) || []
 })
 
+const currentInboundPalletItems = computed<InboundApprovalItem[]>(() => {
+  if (!inboundMode.value) return []
+  if (!inboundApprovalView.value) return []
+  const current = currentInboundPallet.value
+  if (!current) return []
+  return inboundApprovalView.value.items.filter((it) => it.palletId === current.palletId)
+})
+
+const currentInboundPalletMainItem = computed<InboundApprovalItem | null>(() => {
+  const list = currentInboundPalletItems.value
+  if (!list.length) return null
+  return list[0]
+})
+
 const getOutboundPalletRequestedQty = (p: { items?: any[] }) => {
   if (!p || !Array.isArray(p.items)) return 0
   return p.items.reduce((sum, it) => {
@@ -136,6 +172,7 @@ interface InboundPendingPallet {
   positionZ: number
   isGround: boolean
   rotationY?: number // góc xoay pallet (rad), chỉ dùng trên FE 3D
+  stackedOnPalletId?: number | null // ID pallet mà pallet này đang chồng lên
 }
 
 const inboundPendingPallets = ref<InboundPendingPallet[]>([])
@@ -168,6 +205,7 @@ const canCreateInbound = computed(() => userRole.value === 'customer')
 const canViewInbound = computed(() =>
   ['customer', 'warehouse_owner', 'admin'].includes(userRole.value)
 )
+const canManageWarehouse = computed(() => ['warehouse_owner', 'admin'].includes(userRole.value))
 const outbound3DMode = computed(() => route.name === 'WarehouseOutbound3DApproval')
 const canMarkOutboundPicked = computed(
   () => outbound3DMode.value && ['warehouse_owner', 'admin'].includes(userRole.value)
@@ -562,6 +600,12 @@ const isBagPallet = (palletId: number) => {
   return item?.isBag === true
 }
 
+const getInboundApprovalItemForPallet = (palletId: number) => {
+  if (!inboundApprovalView.value) return null
+  const item = inboundApprovalView.value.items.find((it) => it.palletId === palletId)
+  return item || null
+}
+
 const getShelfClearHeightFrontend = (rack: any, shelf: any) => {
   const shelves = ((rack.shelves || []) as any[]).slice().sort((a, b) => {
     const aLevel = Number(a.shelfLevel ?? 0)
@@ -665,6 +709,7 @@ let dragPlane: THREE.Plane | null = null
 const dragOffset = new THREE.Vector3()
 let isDragging = false
 const palletGridStep = 0.1
+let currentStackTarget: { basePalletId: number; stackBaseY: number } | null = null
 
 // UI State
 const viewMode = ref<'zones' | 'items' | 'pallets' | 'racks' | ''>('')
@@ -708,15 +753,14 @@ const getZoneIdFromQuery = (): number | undefined => {
 }
 
 const lockedZoneIdFromQuery = computed(() => getZoneIdFromQuery())
-const isZoneLockedFromQuery = computed(() => !!lockedZoneIdFromQuery.value)
+// Không khoá zone theo query; chỉ dùng làm giá trị mặc định ban đầu và khi reset
+const isZoneLockedFromQuery = computed(() => false)
 
-// Zone list for filter
+// Zone list for filter: luôn hiển thị toàn bộ zone của kho hiện tại
 const zonesForFilter = computed(() => {
   if (!warehouseData.value?.zones) return []
   const zones = warehouseData.value.zones
-  const lockedId = lockedZoneIdFromQuery.value
-  const visibleZones = lockedId ? zones.filter((z) => z.zoneId === lockedId) : zones
-  return visibleZones.map((z) => ({
+  return zones.map((z) => ({
     id: z.zoneId,
     name: z.zoneName || `Zone #${z.zoneId}`
   }))
@@ -816,7 +860,8 @@ const loadWarehouse3DData = async () => {
               positionY: l.positionY,
               positionZ: l.positionZ,
               isGround: l.isGround,
-              rotationY: 0
+              rotationY: 0,
+              stackedOnPalletId: (l as any).stackedOnPalletId ?? null
             }))
 
             // Reset trạng thái duyệt từng pallet
@@ -1552,11 +1597,13 @@ const renderRacks = () => {
       frameEdges,
       new THREE.LineBasicMaterial({ color: 0x1f4e79 })
     )
-    frameLines.position.set(
-      rack.positionX + rack.length / 2,
-      rack.positionY + rack.height / 2,
-      rack.positionZ + rack.width / 2
-    )
+
+    const rotY = typeof rack.rotationY === 'number' ? rack.rotationY : Number(rack.rotationY || 0)
+    const centerX = rack.positionX + rack.length / 2
+    const centerZ = rack.positionZ + rack.width / 2
+
+    frameLines.position.set(centerX, rack.positionY + rack.height / 2, centerZ)
+    frameLines.rotation.y = rotY
     frameLines.name = `rack_${rack.rackId}_frame`
     frameLines.userData = { type: 'rack', data: rack }
     scene.add(frameLines)
@@ -1566,11 +1613,10 @@ const renderRacks = () => {
         const shelfGeometry = new THREE.BoxGeometry(shelf.length, 0.05, shelf.width)
         const shelfMaterial = new THREE.MeshPhongMaterial({ color: 0xf5f5f5 })
         const shelfMesh = new THREE.Mesh(shelfGeometry, shelfMaterial)
-        shelfMesh.position.set(
-          rack.positionX + shelf.length / 2,
-          shelf.positionY,
-          rack.positionZ + shelf.width / 2
-        )
+
+        // Đặt shelf ở tâm footprint của kệ và quay cùng hướng với kệ
+        shelfMesh.position.set(centerX, shelf.positionY, centerZ)
+        shelfMesh.rotation.y = rotY
         shelfMesh.castShadow = true
         shelfMesh.receiveShadow = true
         shelfMesh.name = `shelf_${shelf.shelfId}`
@@ -1980,6 +2026,8 @@ const onPointerDown = (event: PointerEvent) => {
   draggingPalletData = obj.userData?.data
   isDragging = true
 
+  currentStackTarget = null
+
   const data = draggingPalletData
 
   // Xác định mặt phẳng kéo: nếu pallet đang ở trên tầng kệ thì kéo theo mặt phẳng tầng đó,
@@ -2093,9 +2141,153 @@ const onPointerMove = (event: PointerEvent) => {
   let finalX = clampedX
   let finalZ = clampedZ
 
-  // Ngăn không cho pallet inbound chèn vào kệ / pallet khác
+  currentStackTarget = null
+
   const palletId = Number(data.palletId)
   if (Number.isFinite(palletId)) {
+    const pendingMeta = inboundPendingPallets.value.find((p) => p.palletId === palletId)
+
+    if (pendingMeta) {
+      const sizeTop = getPalletSizeForPalletId(palletId)
+      if (sizeTop) {
+        const baseX = finalX - halfL
+        const baseZ = finalZ - halfW
+        const topAabb = getPalletAabb(baseX, baseZ, sizeTop.length, sizeTop.width, data.rotationY)
+
+        let bestBase: InboundPendingPallet | null = null
+        let bestDist2 = Number.POSITIVE_INFINITY
+
+        const pendingPalletsList = inboundPendingPallets.value
+        pendingPalletsList.forEach((p) => {
+          if (p.palletId === palletId) return
+          if (p.zoneId !== pendingMeta.zoneId) return
+          // Chỉ cho stack lên pallet đang được đỡ trực tiếp bởi sàn hoặc kệ (không stack lên pallet khác)
+          if (p.stackedOnPalletId != null) return
+          const sizeBase = getPalletSizeForPalletId(p.palletId)
+          if (!sizeBase) return
+          const baseAabb = getPalletAabb(
+            p.positionX,
+            p.positionZ,
+            sizeBase.length,
+            sizeBase.width,
+            p.rotationY
+          )
+          if (
+            !rectsOverlap(
+              topAabb.minX,
+              topAabb.maxX,
+              topAabb.minZ,
+              topAabb.maxZ,
+              baseAabb.minX,
+              baseAabb.maxX,
+              baseAabb.minZ,
+              baseAabb.maxZ
+            )
+          ) {
+            return
+          }
+
+          const hasTop = pendingPalletsList.some((other) => {
+            if (other.palletId === p.palletId) return false
+            if (other.zoneId !== p.zoneId) return false
+            if (other.isGround) return false
+            const sizeOther = getPalletSizeForPalletId(other.palletId)
+            if (!sizeOther) return false
+            const otherAabb = getPalletAabb(
+              other.positionX,
+              other.positionZ,
+              sizeOther.length,
+              sizeOther.width,
+              other.rotationY
+            )
+            return rectsOverlap(
+              baseAabb.minX,
+              baseAabb.maxX,
+              baseAabb.minZ,
+              baseAabb.maxZ,
+              otherAabb.minX,
+              otherAabb.maxX,
+              otherAabb.minZ,
+              otherAabb.maxZ
+            )
+          })
+
+          if (hasTop) return
+
+          const sizeBaseHalfL = sizeBase.length / 2
+          const sizeBaseHalfW = sizeBase.width / 2
+          const baseCenterX = p.positionX + sizeBaseHalfL
+          const baseCenterZ = p.positionZ + sizeBaseHalfW
+          const dx = baseCenterX - finalX
+          const dz = baseCenterZ - finalZ
+          const dist2 = dx * dx + dz * dz
+          if (dist2 < bestDist2 - 1e-9) {
+            bestDist2 = dist2
+            bestBase = p
+          }
+        })
+
+        const foundBase = bestBase as InboundPendingPallet | null
+        if (foundBase) {
+          const fb = foundBase
+          const topItem = getInboundApprovalItemForPallet(palletId)
+          const baseItem = getInboundApprovalItemForPallet(fb.palletId)
+
+          if (topItem && baseItem && !baseItem.isNonStackable) {
+            const goodsBase = Number(baseItem.itemHeight || 0)
+            const goodsTop = Number(topItem.itemHeight || 0)
+            const palletHeightTop = Number(topItem.palletHeight || 0)
+            if (
+              Number.isFinite(goodsBase) &&
+              Number.isFinite(goodsTop) &&
+              Number.isFinite(palletHeightTop) &&
+              goodsBase > 0 &&
+              goodsTop > 0 &&
+              goodsBase <= 1.5 &&
+              goodsTop <= 1.5
+            ) {
+              const stackHeights = getStackHeightsForPalletId(fb.palletId)
+              const palletHeightBase = stackHeights
+                ? stackHeights.palletHeight
+                : Number(baseItem.palletHeight || 0)
+              const goodsHeightBase = stackHeights ? stackHeights.goodsHeight : goodsBase
+
+              if (Number.isFinite(palletHeightBase)) {
+                // Nếu base đang ở trên kệ thì kiểm tra khoảng hở của tầng kệ
+                let canStackByShelf = true
+                if (fb.shelfId != null) {
+                  const shelfInfo = findShelfById(fb.shelfId)
+                  if (shelfInfo) {
+                    const clearHeight = getShelfClearHeightFrontend(shelfInfo.rack, shelfInfo.shelf)
+                    if (clearHeight > 0) {
+                      const totalStackHeight =
+                        palletHeightBase + goodsHeightBase + palletHeightTop + goodsTop
+                      if (totalStackHeight > clearHeight + 1e-6) {
+                        canStackByShelf = false
+                      }
+                    }
+                  }
+                }
+
+                if (canStackByShelf) {
+                  const stackBaseY = fb.positionY + palletHeightBase + goodsHeightBase
+                  const sizeBase = getPalletSizeForPalletId(fb.palletId)
+                  if (sizeBase) {
+                    const baseCenterX = fb.positionX + sizeBase.length / 2
+                    const baseCenterZ = fb.positionZ + sizeBase.width / 2
+                    const centerY = stackBaseY + palletHeightTop / 2
+                    draggingPallet.position.set(baseCenterX, centerY, baseCenterZ)
+                    currentStackTarget = { basePalletId: fb.palletId, stackBaseY }
+                    return
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     const baseX = finalX - halfL
     const baseZ = finalZ - halfW
     const rotationY = typeof data.rotationY === 'number' ? data.rotationY : 0
@@ -2139,13 +2331,30 @@ const onPointerUp = () => {
     const centerZ = draggingPallet.position.z
 
     const palletId = draggingPalletData.palletId as number
+    const currentPallets = inboundPendingPallets.value
 
-    inboundPendingPallets.value = inboundPendingPallets.value.map((p) => {
+    inboundPendingPallets.value = currentPallets.map((p) => {
       if (p.palletId !== palletId) return p
+      const stackTarget = currentStackTarget
+      if (stackTarget) {
+        const base = currentPallets.find((bp) => bp.palletId === stackTarget.basePalletId)
+        const basePosX = base ? base.positionX : centerX - draggingPalletData.palletLength / 2
+        const basePosZ = base ? base.positionZ : centerZ - draggingPalletData.palletWidth / 2
+        return {
+          ...p,
+          positionX: basePosX,
+          positionY: stackTarget.stackBaseY,
+          positionZ: basePosZ,
+          isGround: false,
+          shelfId: base ? (base.shelfId ?? null) : (p.shelfId ?? null),
+          stackedOnPalletId: base ? base.palletId : null
+        }
+      }
       return {
         ...p,
         positionX: centerX - draggingPalletData.palletLength / 2,
-        positionZ: centerZ - draggingPalletData.palletWidth / 2
+        positionZ: centerZ - draggingPalletData.palletWidth / 2,
+        stackedOnPalletId: null
       }
     })
   }
@@ -2154,6 +2363,7 @@ const onPointerUp = () => {
   draggingPalletData = null
   dragPlane = null
   isDragging = false
+  currentStackTarget = null
 
   if (controls) {
     controls.enableRotate = true
@@ -3131,13 +3341,17 @@ const handleApproveInboundFrom3D = async () => {
     return
   }
 
-  const layouts: PreferredPalletLayout[] = inboundPendingPallets.value.map((p) => ({
+  const layouts: PreferredPalletLayout[] = inboundPendingPallets.value.map((p, index) => ({
     palletId: p.palletId,
+    // Dùng index làm priority đơn giản để backend có thứ tự ổn định (nếu cần)
+    priority: index,
     zoneId: p.zoneId,
     shelfId: p.shelfId ?? undefined,
     positionX: p.positionX,
     positionZ: p.positionZ,
-    rotationY: typeof p.rotationY === 'number' ? p.rotationY : 0
+    rotationY: typeof p.rotationY === 'number' ? p.rotationY : 0,
+    // Quan trọng: truyền stackedOnPalletId để backend biết pallet nào đang chồng lên pallet nào
+    stackedOnPalletId: p.stackedOnPalletId ?? undefined
   }))
 
   const payload = {
@@ -3218,6 +3432,10 @@ onBeforeUnmount(() => {
           <Icon icon="vi-ant-design:unordered-list-outlined" />
           Xem Yêu Cầu Nhập Kho
         </ElButton>
+        <ElButton v-if="canManageWarehouse" type="danger" @click="toggleRentStatus3D">
+          <Icon icon="vi-ant-design:stop-outlined" />
+          {{ isRentable ? 'Bật cho thuê lại' : 'Ngừng cho thuê' }}
+        </ElButton>
       </template>
       <template v-else>
         <ElButton type="primary" @click="goBackFrom3D">
@@ -3239,6 +3457,10 @@ onBeforeUnmount(() => {
         <ElButton v-if="canViewInbound" @click="goToViewInbound">
           <Icon icon="vi-ant-design:unordered-list-outlined" />
           Xem Yêu Cầu Nhập Kho
+        </ElButton>
+        <ElButton v-if="canManageWarehouse" type="danger" @click="toggleRentStatus3D">
+          <Icon icon="vi-ant-design:stop-outlined" />
+          {{ isRentable ? 'Bật cho thuê lại' : 'Ngừng cho thuê' }}
         </ElButton>
       </template>
     </template>
@@ -3473,7 +3695,7 @@ onBeforeUnmount(() => {
             </div>
             <div
               v-if="currentOutboundPalletItems.length"
-              style=" margin: 6px 0 8px;font-size: 12px"
+              style="margin: 6px 0 8px; font-size: 12px"
             >
               <div
                 v-for="it in currentOutboundPalletItems"
@@ -3504,6 +3726,52 @@ onBeforeUnmount(() => {
               <Icon icon="vi-ant-design:check-circle-outlined" />
               Đã lấy hàng
             </ElButton>
+          </div>
+
+          <div
+            v-if="inboundMode && currentInboundPalletMainItem && currentInboundPallet"
+            class="info-overlay"
+          >
+            <ElCard shadow="hover">
+              <template #header>
+                <div class="info-header">
+                  <span> Pallet đang duyệt #{{ currentInboundPallet.palletId }} </span>
+                </div>
+              </template>
+              <div class="info-content">
+                <p>
+                  <strong>Sản phẩm:</strong>
+                  <span v-if="currentInboundPalletMainItem.productCode">
+                    [{{ currentInboundPalletMainItem.productCode }}]
+                  </span>
+                  {{ currentInboundPalletMainItem.productName }}
+                </p>
+                <p>
+                  <strong>Số lượng:</strong>
+                  {{ currentInboundPalletMainItem.quantity }}
+                  <span v-if="currentInboundPalletMainItem.unit">
+                    {{ currentInboundPalletMainItem.unit }}
+                  </span>
+                </p>
+                <p>
+                  <strong>Kích thước pallet:</strong>
+                  {{ currentInboundPalletMainItem.palletLength }}m ×
+                  {{ currentInboundPalletMainItem.palletWidth }}m ×
+                  {{ currentInboundPalletMainItem.palletHeight }}m
+                </p>
+                <p>
+                  <strong>Kích thước khối hàng trên pallet:</strong>
+                  {{ currentInboundPalletMainItem.itemLength }}m ×
+                  {{ currentInboundPalletMainItem.itemWidth }}m ×
+                  {{ currentInboundPalletMainItem.itemHeight }}m
+                </p>
+                <p>
+                  <strong>Cho phép xếp chồng:</strong>
+                  <span v-if="currentInboundPalletMainItem.isNonStackable">Không</span>
+                  <span v-else>Có</span>
+                </p>
+              </div>
+            </ElCard>
           </div>
 
           <!-- Inbound actions inside 3D frame -->
@@ -3599,7 +3867,7 @@ onBeforeUnmount(() => {
               <div>
                 <p>
                   <strong>Mã pallet:</strong>
-                  {{ palletDetail.barcode || '#' + palletDetail.palletId }}
+                  #{{ palletDetail.palletId }}
                 </p>
                 <p>
                   <strong>Vị trí:</strong>

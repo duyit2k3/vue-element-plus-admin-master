@@ -126,6 +126,8 @@ export interface InboundApprovalItem {
   palletWidth: number
   palletHeight: number
   isBag: boolean
+  isNonStackable?: boolean
+  isTopSurfaceFull?: boolean
   stackMode?: string | null
   // Layout chi tiết các đơn vị hàng trên pallet (nếu có), lấy từ InboundItemStackUnits.
   // Dùng cho viewer 2D/3D để vẽ đúng cách xếp.
@@ -155,6 +157,7 @@ export interface PreferredPalletLayout {
   positionX?: number
   positionZ?: number
   rotationY?: number
+  stackedOnPalletId?: number | null
 }
 
 export interface ApproveInboundLayoutRequest {

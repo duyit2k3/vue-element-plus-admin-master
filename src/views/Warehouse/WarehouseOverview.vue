@@ -14,7 +14,8 @@ const warehouses = ref<WarehouseListItem[]>([])
 const userRole = computed(() => userStore.getUserInfo?.role?.toLowerCase() || '')
 
 const displayWarehouses = computed(() => {
-  if (userRole.value === 'warehouse_owner') {
+  // Chủ kho và khách hàng: hiển thị danh sách kho duy nhất theo warehouseId
+  if (userRole.value === 'warehouse_owner' || userRole.value === 'customer') {
     const map = new Map<number, WarehouseListItem>()
     warehouses.value.forEach((w) => {
       if (!map.has(w.warehouseId)) {
@@ -23,8 +24,37 @@ const displayWarehouses = computed(() => {
     })
     return Array.from(map.values())
   }
+
+  // Các role khác: dùng nguyên danh sách trả về từ API
   return warehouses.value
 })
+
+// Gom danh sách tất cả khu vực (zoneName) mà customer có trong từng kho
+const customerZonesByWarehouse = computed<Record<number, string[]>>(() => {
+  const result: Record<number, string[]> = {}
+  if (userRole.value !== 'customer') return result
+
+  warehouses.value.forEach((w) => {
+    const wid = w.warehouseId
+    const name = w.zoneName
+    if (!name) return
+
+    if (!result[wid]) {
+      result[wid] = [name]
+    } else if (!result[wid].includes(name)) {
+      result[wid].push(name)
+    }
+  })
+
+  return result
+})
+
+const getCustomerZonesLabel = (warehouseId: number): string => {
+  if (userRole.value !== 'customer') return ''
+  const zones = customerZonesByWarehouse.value[warehouseId]
+  if (!zones || zones.length === 0) return 'Chưa phân bổ khu vực'
+  return zones.join(', ')
+}
 
 // Statistics
 const stats = computed(() => ({
@@ -69,15 +99,8 @@ const goToWarehouse = (warehouse: WarehouseListItem) => {
 }
 
 const goTo3DView = (warehouse: WarehouseListItem) => {
-  const query: any = {}
-  if (userRole.value === 'customer' && warehouse.zoneId) {
-    query.zoneId = String(warehouse.zoneId)
-  }
-
-  push({
-    path: `/warehouse/${warehouse.warehouseId}/3d-view`,
-    query
-  })
+  // Với cả warehouse_owner và customer: mở view 3D theo kho, không ép zoneId
+  push(`/warehouse/${warehouse.warehouseId}/3d-view`)
 }
 
 onMounted(() => {
@@ -142,6 +165,14 @@ onMounted(() => {
               Xem Tất Cả Kho
             </ElButton>
             <ElButton
+              v-if="userRole === 'warehouse_owner'"
+              type="success"
+              @click="push('/warehouse/create')"
+            >
+              <Icon icon="vi-ant-design:plus-square-outlined" />
+              Tạo Kho
+            </ElButton>
+            <ElButton
               v-if="userRole !== 'warehouse_owner'"
               type="warning"
               @click="push('/warehouse/inbound-request/create')"
@@ -178,7 +209,7 @@ onMounted(() => {
 
           <div class="warehouse-grid">
             <ElCard
-              v-for="warehouse in displayWarehouses.slice(0, 6)"
+              v-for="warehouse in displayWarehouses"
               :key="warehouse.warehouseId"
               shadow="hover"
               class="warehouse-card"
@@ -186,10 +217,15 @@ onMounted(() => {
               <div class="warehouse-info">
                 <h3>{{ warehouse.warehouseName || 'Chưa đặt tên' }}</h3>
                 <p v-if="userRole === 'customer'" class="text-gray-500">
-                  {{ warehouse.zoneName || 'Chưa phân bổ khu vực' }}
+                  {{ getCustomerZonesLabel(warehouse.warehouseId) }}
                 </p>
                 <p v-else-if="userRole !== 'warehouse_owner'" class="text-gray-500">
                   {{ warehouse.ownerName }}
+                </p>
+                <!-- Địa điểm / địa chỉ kho -->
+                <p class="text-sm text-gray-500">
+                  <Icon icon="vi-ant-design:environment-outlined" />
+                  Địa điểm: {{ warehouse.address || warehouse.warehouseName || 'Chưa có địa điểm' }}
                 </p>
                 <!-- Với warehouse_owner không cần hiển thị khu vực khách thuê -->
                 <p class="text-sm">

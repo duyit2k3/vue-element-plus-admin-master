@@ -668,6 +668,18 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
         }
       },
       {
+        path: 'create',
+        component: () => import('@/views/Warehouse/WarehouseCreate.vue'),
+        name: 'WarehouseCreate',
+        meta: {
+          title: 'Tạo Kho',
+          icon: 'vi-ant-design:plus-square-outlined',
+          hidden: true,
+          canTo: true,
+          activeMenu: '/warehouse/overview'
+        }
+      },
+      {
         path: 'list',
         component: () => import('@/views/Warehouse/WarehouseList.vue'),
         name: 'WarehouseList',
@@ -675,6 +687,16 @@ export const asyncRouterMap: AppRouteRecordRaw[] = [
           title: 'Danh Sách Kho',
           icon: 'vi-ant-design:appstore-outlined',
           noCache: false
+        }
+      },
+      {
+        path: 'rent',
+        component: () => import('@/views/Warehouse/WarehouseRentList.vue'),
+        name: 'WarehouseRentList',
+        meta: {
+          title: 'Thuê Kho',
+          icon: 'vi-ant-design:shop-outlined',
+          noCache: true
         }
       },
       {

@@ -652,7 +652,7 @@ onBeforeUnmount(() => {
             <ElTag v-if="selectedItem.item.isFragile" type="warning">Dễ vỡ</ElTag>
           </ElDescriptionsItem>
           <ElDescriptionsItem label="Pallet">
-            {{ selectedItem.pallet.barcode }}
+            #{{ selectedItem.pallet.palletId }}
           </ElDescriptionsItem>
           <ElDescriptionsItem label="Vị trí">
             X: {{ selectedItem.pallet.positionX.toFixed(2) }}, Y:

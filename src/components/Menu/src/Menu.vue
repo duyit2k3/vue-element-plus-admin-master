@@ -48,13 +48,26 @@ export default defineComponent({
       unref(layout) === 'cutMenu' ? permissionStore.getMenuTabRouters : permissionStore.getRouters
     )
 
-    const filterOutboundPickingForCustomer = (routes: AppRouteRecordRaw[]): AppRouteRecordRaw[] => {
-      const isCustomer = userRole.value === 'customer'
-      if (!isCustomer) return routes
+    const filterMenuByRole = (routes: AppRouteRecordRaw[]): AppRouteRecordRaw[] => {
+      const role = userRole.value
 
       const filterRecursive = (list: AppRouteRecordRaw[]): AppRouteRecordRaw[] => {
         return list
-          .filter((r) => r.name !== 'WarehouseOutboundPickingList')
+          .filter((r) => {
+            // Customer không cần thấy menu Phiếu Xuất Đang Lấy Hàng
+            if (role === 'customer' && r.name === 'WarehouseOutboundPickingList') {
+              return false
+            }
+            // Customer không cần thấy menu Danh Sách Kho (dùng màn Thuê kho riêng)
+            if (role === 'customer' && r.name === 'WarehouseList') {
+              return false
+            }
+            // Chủ kho không cần thấy menu Thuê kho (dành cho customer)
+            if (role === 'warehouse_owner' && r.name === 'WarehouseRentList') {
+              return false
+            }
+            return true
+          })
           .map((r) => {
             const copy: AppRouteRecordRaw = { ...r }
             if (copy.children && copy.children.length) {
@@ -67,7 +80,7 @@ export default defineComponent({
       return filterRecursive(routes)
     }
 
-    const routers = computed(() => filterOutboundPickingForCustomer(unref(rawRouters)))
+    const routers = computed(() => filterMenuByRole(unref(rawRouters)))
 
     const collapse = computed(() => appStore.getCollapse)
 

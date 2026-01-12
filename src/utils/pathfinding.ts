@@ -37,6 +37,55 @@ interface GridCoord {
   index: number
 }
 
+function getRotatedBounds(
+  posX: number,
+  posZ: number,
+  length: number,
+  width: number,
+  rotationY?: number | null
+): { minX: number; maxX: number; minZ: number; maxZ: number } {
+  const angle = typeof rotationY === 'number' ? rotationY : 0
+
+  if (!angle) {
+    return {
+      minX: posX,
+      maxX: posX + length,
+      minZ: posZ,
+      maxZ: posZ + width
+    }
+  }
+
+  const centerX = posX + length / 2
+  const centerZ = posZ + width / 2
+  const halfL = length / 2
+  const halfW = width / 2
+  const cos = Math.cos(angle)
+  const sin = Math.sin(angle)
+
+  const corners = [
+    { dx: -halfL, dz: -halfW },
+    { dx: halfL, dz: -halfW },
+    { dx: halfL, dz: halfW },
+    { dx: -halfL, dz: halfW }
+  ]
+
+  let minX = Number.POSITIVE_INFINITY
+  let maxX = Number.NEGATIVE_INFINITY
+  let minZ = Number.POSITIVE_INFINITY
+  let maxZ = Number.NEGATIVE_INFINITY
+
+  corners.forEach(({ dx, dz }) => {
+    const x = centerX + dx * cos - dz * sin
+    const z = centerZ + dx * sin + dz * cos
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (z < minZ) minZ = z
+    if (z > maxZ) maxZ = z
+  })
+
+  return { minX, maxX, minZ, maxZ }
+}
+
 interface HeapNode {
   index: number
   f: number
@@ -190,19 +239,33 @@ function buildObstacleGrid(
   if (margin > 0) {
     const racks = data.racks || []
     racks.forEach((rack: Rack) => {
-      const minX = rack.positionX - margin
-      const maxX = rack.positionX + rack.length + margin
-      const minZ = rack.positionZ - margin
-      const maxZ = rack.positionZ + rack.width + margin
+      const bounds = getRotatedBounds(
+        rack.positionX,
+        rack.positionZ,
+        rack.length,
+        rack.width,
+        (rack as any).rotationY
+      )
+      const minX = bounds.minX - margin
+      const maxX = bounds.maxX + margin
+      const minZ = bounds.minZ - margin
+      const maxZ = bounds.maxZ + margin
       markRectangle(minX, maxX, minZ, maxZ)
     })
 
     const pallets = data.pallets || []
     pallets.forEach((pallet: PalletLocation) => {
-      const minX = pallet.positionX - margin
-      const maxX = pallet.positionX + pallet.palletLength + margin
-      const minZ = pallet.positionZ - margin
-      const maxZ = pallet.positionZ + pallet.palletWidth + margin
+      const bounds = getRotatedBounds(
+        pallet.positionX,
+        pallet.positionZ,
+        pallet.palletLength,
+        pallet.palletWidth,
+        pallet.rotationY ?? null
+      )
+      const minX = bounds.minX - margin
+      const maxX = bounds.maxX + margin
+      const minZ = bounds.minZ - margin
+      const maxZ = bounds.maxZ + margin
       markRectangle(minX, maxX, minZ, maxZ)
     })
   }

@@ -8,11 +8,18 @@ const warehouseApi = {
   getAllWarehouses: () => {
     return request.get({ url: '/Warehouse/all' })
   },
+  createWarehouse: (data: CreateWarehouseRequest) => {
+    return request.post({ url: '/Warehouse', data })
+  },
   getWarehousesByOwner: (ownerId: number) => {
     return request.get({ url: `/Warehouse/owner/${ownerId}` })
   },
   getWarehousesByCustomer: (customerId: number) => {
     return request.get({ url: `/Warehouse/customer/${customerId}` })
+  },
+
+  setRentStatus: (warehouseId: number, isRentable: boolean) => {
+    return request.put({ url: `/Warehouse/${warehouseId}/rent-status`, params: { isRentable } })
   },
 
   // Rack management by zone
@@ -36,6 +43,17 @@ const warehouseApi = {
 export default warehouseApi
 
 // Types
+export interface CreateWarehouseRequest {
+  warehouseName: string
+  ownerId: number
+  address?: string | null
+  length: number
+  width: number
+  height: number
+  warehouseType: string
+  allowedItemTypes?: string | null
+}
+
 export interface WarehouseZone {
   zoneId: number
   zoneName: string | null
@@ -71,6 +89,7 @@ export interface Rack {
   width: number
   height: number
   maxShelves: number | null
+  rotationY?: number | null
   shelves: Shelf[]
 }
 
@@ -95,6 +114,7 @@ export interface CreateRackRequest {
   width: number
   height: number
   maxShelves?: number | null
+  rotationY?: number | null
 }
 
 export interface UpdateRackRequest {
@@ -102,12 +122,14 @@ export interface UpdateRackRequest {
   positionX: number
   positionZ: number
   height?: number | null
+  rotationY?: number | null
 }
 
 export interface RackPositionUpdateItem {
   rackId: number
   positionX: number
   positionZ: number
+  rotationY?: number | null
 }
 
 export interface BulkUpdateRackPositionsRequest {
@@ -218,12 +240,14 @@ export interface Warehouse3DData {
   warehouseName: string | null
   ownerId: number
   ownerName: string | null
+  address: string | null
   length: number
   width: number
   height: number
   warehouseType: string | null
   allowedItemTypes: string | null
   status: string | null
+  isRentable: boolean
   checkinPositionX?: number | null
   checkinPositionY?: number | null
   checkinPositionZ?: number | null
@@ -242,11 +266,13 @@ export interface WarehouseListItem {
   warehouseName: string | null
   ownerId: number
   ownerName: string | null
+  address?: string | null
   length: number
   width: number
   height: number
   warehouseType: string | null
   status: string | null
+  isRentable?: boolean
   createdAt: string | null
   zoneId?: number | null
   zoneName?: string | null

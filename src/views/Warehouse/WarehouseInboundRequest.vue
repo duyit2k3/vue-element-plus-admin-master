@@ -235,6 +235,7 @@ const productForm = reactive<CreateProductRequest>({
   standardWeight: undefined,
   isFragile: false,
   isHazardous: false,
+  isNonStackable: false,
   storageConditions: ''
 })
 
@@ -308,6 +309,7 @@ const handleSelectProduct = (productId: number) => {
   productForm.standardWeight = p.standardWeight || undefined
   productForm.isFragile = p.isFragile ?? false
   productForm.isHazardous = p.isHazardous ?? false
+  productForm.isNonStackable = p.isNonStackable ?? false
   productForm.storageConditions = p.storageConditions || ''
 }
 
@@ -597,7 +599,7 @@ const initAutoPreviewScenes = () => {
       }
     }
 
-    const unitH = isBag ? baseH * 0.6 : baseH
+    const unitH = baseH
 
     const unitGeo = new THREE.BoxGeometry(unitL * gapRatio, unitH, unitW * gapRatio)
     const unitMat = new THREE.MeshStandardMaterial({
@@ -1180,6 +1182,14 @@ onMounted(() => {
                 <label class="checkbox-label ml-20">
                   <input v-model="productForm.isHazardous" type="checkbox" />
                   <span class="ml-5">Nguy hiểm</span>
+                </label>
+              </div>
+            </ElFormItem>
+            <ElFormItem label="Xếp chồng">
+              <div class="inline-inputs">
+                <label class="checkbox-label">
+                  <input v-model="productForm.isNonStackable" type="checkbox" />
+                  <span class="ml-5">Không cho phép xếp chồng</span>
                 </label>
               </div>
             </ElFormItem>

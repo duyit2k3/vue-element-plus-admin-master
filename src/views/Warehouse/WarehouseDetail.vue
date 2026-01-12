@@ -22,6 +22,8 @@ const canViewInbound = computed(() =>
 )
 const canManageWarehouse = computed(() => ['warehouse_owner', 'admin'].includes(userRole.value))
 
+const isRentable = computed(() => warehouseData.value?.isRentable ?? false)
+
 const goToCreateInbound = () => {
   push({
     path: '/warehouse/inbound-request/create',
@@ -31,6 +33,26 @@ const goToCreateInbound = () => {
 
 const goToViewInbound = () => {
   push({ path: '/warehouse/inbound-request', query: { warehouseId: String(warehouseId.value) } })
+}
+
+const toggleRentStatus = async () => {
+  if (!warehouseData.value) return
+  const target = !isRentable.value
+  try {
+    const res = await warehouseApi.setRentStatus(warehouseId.value, target)
+    if (res.statusCode === 200 || res.code === 0) {
+      // Theo quy ước: target = true (1) => ngừng cho thuê, target = false (0) => đang cho thuê
+      ElMessage.success(target ? 'Kho đã ngừng cho thuê' : 'Kho đã bật cho thuê')
+      await loadWarehouseData()
+      if (warehouseData.value) {
+        ;(warehouseData.value as any).isRentable = target
+      }
+    } else {
+      ElMessage.error('Không thể cập nhật trạng thái cho thuê của kho')
+    }
+  } catch (error) {
+    ElMessage.error('Lỗi khi cập nhật trạng thái cho thuê của kho')
+  }
 }
 
 // Statistics from warehouse data
@@ -104,13 +126,20 @@ const schema = computed(() => {
 
 const data = computed(() => {
   if (!warehouseData.value) return {}
+  const type = warehouseData.value.warehouseType?.toLowerCase() || ''
+  let allowedText = 'Hàng bao và thùng'
+  if (type === 'small') {
+    allowedText = 'Chỉ hàng bao'
+  } else if (type === 'medium' || type === 'large') {
+    allowedText = 'Hàng bao và thùng'
+  }
   return {
     warehouseId: warehouseData.value.warehouseId,
     warehouseName: warehouseData.value.warehouseName || 'Chưa đặt tên',
     ownerName: warehouseData.value.ownerName || 'N/A',
     warehouseType: warehouseData.value.warehouseType || 'N/A',
     size: `${warehouseData.value.length}m × ${warehouseData.value.width}m × ${warehouseData.value.height}m`,
-    allowedItemTypes: warehouseData.value.allowedItemTypes || 'Tất cả',
+    allowedItemTypes: allowedText,
     status: warehouseData.value.status || 'N/A'
   }
 })
@@ -212,6 +241,10 @@ onMounted(() => {
             <ElButton v-if="canViewInbound" @click="goToViewInbound">
               <Icon icon="vi-ant-design:unordered-list-outlined" />
               Xem Yêu Cầu Nhập Kho
+            </ElButton>
+            <ElButton v-if="canManageWarehouse" type="danger" @click="toggleRentStatus">
+              <Icon icon="vi-ant-design:stop-outlined" />
+              {{ isRentable ? 'Bật cho thuê lại' : 'Ngừng cho thuê' }}
             </ElButton>
           </div>
         </ElCard>

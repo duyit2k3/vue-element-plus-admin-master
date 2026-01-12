@@ -416,7 +416,7 @@ const showPalletDetails = (pallet: any) => {
   ElMessageBox.alert(
     `
     <div>
-      <p><strong>Barcode:</strong> ${pallet.barcode}</p>
+      <p><strong>Mã pallet:</strong> #${pallet.palletId}</p>
       <p><strong>Vị trí:</strong> X:${pallet.positionX}, Y:${pallet.positionY}, Z:${pallet.positionZ}</p>
       <p><strong>Số lượng hàng:</strong> ${items.length}</p>
       ${pallet.isGround ? '<p><strong>Đặt trên nền</strong></p>' : '<p><strong>Trên kệ</strong></p>'}

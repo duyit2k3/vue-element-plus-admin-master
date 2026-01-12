@@ -13,6 +13,7 @@ export interface ProductViewModel {
   standardWeight?: number
   isFragile?: boolean
   isHazardous?: boolean
+  isNonStackable?: boolean
   storageConditions?: string
   createUser?: number
   status?: string
@@ -30,6 +31,7 @@ export interface CreateProductRequest {
   standardWeight?: number
   isFragile?: boolean
   isHazardous?: boolean
+  isNonStackable?: boolean
   storageConditions?: string
 }
 

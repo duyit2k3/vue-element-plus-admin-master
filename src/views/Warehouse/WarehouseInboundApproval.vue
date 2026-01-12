@@ -1341,7 +1341,7 @@ const handleBack = () => {
             </p>
             <p>
               <strong>Pallet:</strong>
-              {{ selectedItem.palletBarcode }} (ID: {{ selectedItem.palletId }})
+              #{{ selectedItem.palletId }}
             </p>
 
             <ElDivider />
