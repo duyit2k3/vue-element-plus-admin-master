@@ -1519,6 +1519,13 @@ const renderCheckinAndGates = () => {
     group.add(top)
 
     group.position.set(gate.positionX, 0, gate.positionZ)
+
+    const rotY =
+      typeof gate.rotationY === 'number' ? gate.rotationY : Number((gate as any).rotationY || 0)
+    if (Number.isFinite(rotY)) {
+      group.rotation.y = rotY
+    }
+
     group.name = `gate_${gate.gateId}`
     scene.add(group)
   })

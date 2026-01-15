@@ -232,6 +232,7 @@ export interface WarehouseGate {
   length?: number | null
   width?: number | null
   height?: number | null
+  rotationY?: number | null
   gateType: string
 }
 
