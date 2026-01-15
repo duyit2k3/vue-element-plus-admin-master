@@ -1,0 +1,18 @@
+# Không gửi node_modules vào build context
+node_modules
+.pnp*
+.pnpm-store
+# Build output
+dist
+build
+# Git
+.git
+.gitignore
+# IDE / editor
+.vscode
+.idea
+*.log
+# Misc
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
